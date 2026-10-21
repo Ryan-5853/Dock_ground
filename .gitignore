@@ -1,0 +1,8 @@
+/build/
+/build-*/
+/frontend/node_modules/
+/frontend/dist/
+/logs/
+/.cache/
+*.log
+*.pid

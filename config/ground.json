@@ -1,0 +1,74 @@
+{
+  "aircraft": {
+    "id": "aircraft-01",
+    "name": "飞行器 01"
+  },
+  "server": {
+    "http_bind": "127.0.0.1",
+    "http_port": 8080,
+    "web_root": "frontend/dist"
+  },
+  "control": {
+    "rate_hz": 100.0,
+    "warning_pose_age_ms": 30.0,
+    "max_pose_age_ms": 50.0,
+    "deadman_timeout_ms": 250.0
+  },
+  "position_loop": {
+    "x": {"kp": 0.60, "ki": 0.01, "kd": 0.30},
+    "y": {"kp": 0.60, "ki": 0.01, "kd": 0.30},
+    "z": {"kp": 0.06, "ki": 0.01, "kd": 0.08},
+    "max_accel_mps2": 4.0,
+    "max_tilt_rad": 0.3490658504,
+    "min_throttle": 0.20,
+    "hover_throttle": 0.56,
+    "max_throttle": 0.96,
+    "z_velocity_damping": 0.08,
+    "max_yaw_rate_rad_s": 1.2,
+    "yaw_rate_kp": 2.0,
+    "max_position_error_m": 10.0,
+    "gravity_mps2": 9.80665
+  },
+  "flight_log": {
+    "enabled": true,
+    "directory": "logs/flights",
+    "telemetry_stale_timeout_ms": 2000
+  },
+  "initial_target": {
+    "position_xyz_m": [0.0, 0.0, 0.0],
+    "yaw_rad": 0.0,
+    "use_current_pose": true
+  },
+  "simulation": {
+    "pose_rate_hz": 100.0
+  },
+  "pose": {
+    "source": "vrpn"
+  },
+  "flight": {
+    "transport": "loopback",
+    "protocol": null,
+    "remote_ip": "192.168.31.100",
+    "remote_port": null,
+    "rc_roll_channel": 1,
+    "rc_pitch_channel": 2,
+    "rc_throttle_channel": 3,
+    "rc_yaw_channel": 4,
+    "bumpless_hold_ms": 40,
+    "throttle_transition_ms": 300,
+    "handoff_max_vertical_speed_mps": 0.20,
+    "handoff_max_throttle_delta": 0.10
+  },
+  "vrpn": {
+    "endpoint": "MCAvatar@192.168.31.221:3883",
+    "sensor_id": 1,
+    "position_scale": 0.001,
+    "auto_origin": true,
+    "trust_source_timestamp": false,
+    "axes_from_vrpn": [
+      [1.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0],
+      [0.0, 0.0, 1.0]
+    ]
+  }
+}
