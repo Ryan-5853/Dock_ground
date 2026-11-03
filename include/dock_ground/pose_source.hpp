@@ -64,6 +64,7 @@ struct VrpnPoseSourceOptions {
     std::string endpoint{"MCAvatar@192.168.31.221:3883"};
     int sensor_id{-1};
     double position_scale{0.001};
+    double expected_rate_hz{120.0};
     bool auto_origin{true};
     bool trust_source_timestamp{false};
     Mat3 axes_from_vrpn{

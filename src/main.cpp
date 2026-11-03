@@ -182,7 +182,8 @@ int main(int argc, char** argv) {
             << "  control:  " << config.control_rate_hz << " Hz\n"
             << "  flight log: "
             << (config.flight_log_enabled
-                    ? config.flight_log_directory + " (ARM -> CSV)"
+                    ? config.flight_log_directory +
+                          " (ARM CSV + pre-roll)"
                     : std::string("disabled"))
             << '\n'
             << "  web:      http://" << config.http_bind << ':'
@@ -194,7 +195,7 @@ int main(int argc, char** argv) {
                 << *config.gs_link_bind_port << " -> "
                 << config.esp32_ip << ':' << *config.esp32_port
                 << "\n"
-                << "  position: incremental PID -> DATA_RC "
+                << "  position: PID + velocity damping -> DATA_RC "
                    "roll/pitch/yaw/throttle / hover "
                 << config.position_loop.hover_throttle
                 << " / z damping " << config.position_loop.z_velocity_damping

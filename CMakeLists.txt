@@ -91,4 +91,18 @@ if(DOCK_GROUND_BUILD_TESTS)
     )
 
     add_test(NAME dock_ground_tests COMMAND dock_ground_tests)
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME vrpn_stability_analysis_test
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vrpn_stability.py
+        )
+        add_test(
+            NAME vrpn_wire_analysis_test
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vrpn_wire.py
+        )
+    endif()
 endif()

@@ -10,7 +10,8 @@
 - 包头、长度、版本、包类别和 CRC-16/CCITT-FALSE 均在接收时检查。
 - 发送方向维护独立 16 位序号；数据帧不重传，ACK 指令复用序号并设置 `RETRY`。
 - GCS 以本地接收时间判断新鲜度，不比较 FC 的 `timestamp_ms` 与 PC 时钟。
-- 只有 FC 遥测和心跳同时新鲜时，`DATA_RC` 与指令才允许上行。
+- `DATA_RC` 只要求 FC 遥测新鲜；心跳只用于会话命令、模式状态和诊断。
+- 起飞/降落/abort 等会话命令要求遥测和 FC 心跳同时新鲜。
 - 起飞/降落/abort 使用 FC 心跳中的当前 `session_id`；执行结果以遥测和 ACK 为准。
 - 地面站不修改 RC 通道 8，也不提供 arm；飞控的 `GroundStationGate` 和物理 RC
   始终是最终安全门。
@@ -30,8 +31,9 @@
     "remote_ip": "192.168.31.100",
     "remote_port": 14550,
     "telemetry_timeout_ms": 250,
-    "heartbeat_timeout_ms": 300,
-    "heartbeat_rate_hz": 10.0,
+    "heartbeat_timeout_ms": 500,
+    "heartbeat_rate_hz": 20.0,
+    "data_rc_rate_hz": 100.0,
     "rc_roll_channel": 1,
     "rc_pitch_channel": 2,
     "rc_throttle_channel": 3,
@@ -46,8 +48,8 @@
 
 飞控确认前地面站只实时透传遥测中的最新 RC 四通道，不锁存或启动位置环。
 确认 `GS_MODE_ACTIVE` 后重新采样最新 RC，并等待垂速和油门进入安全接管窗口。
-稳定后至少保持 `bumpless_hold_ms`（默认 40 ms，约两个 50 Hz 包）；之后 R/P/Y
-从该基线叠加位置环增量，高度 Z PID 从捕获油门起步并使用垂速阻尼，再按
+稳定后至少保持 `bumpless_hold_ms`（默认 40 ms，约四个 100 Hz 包）；之后 R/P/Y
+从该基线叠加位置环增量，高度 Z 使用标定悬停油门前馈和垂速阻尼，再按
 `throttle_transition_ms` 对应的满量程速率自适应过渡到绝对高度环输出，避免高
 RC 油门基线吞掉向下制动权限，同时不在差值很小时制造固定延迟。
 

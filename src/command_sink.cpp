@@ -1,5 +1,6 @@
 #include "dock_ground/command_sink.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -70,8 +71,19 @@ LinkStatus LoopbackCommandSink::status() const noexcept {
     return result;
 }
 
-GsLinkCommandSink::GsLinkCommandSink(gs_link::UdpLink& link)
-    : link_(link) {}
+GsLinkCommandSink::GsLinkCommandSink(
+    gs_link::UdpLink& link, double target_rate_hz)
+    : link_(link), target_rate_hz_(target_rate_hz) {
+    const double bounded_rate = std::max(1.0, target_rate_hz_);
+    send_period_ =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(1.0 / bounded_rate));
+    const double tolerance_s =
+        std::min(0.001, 0.25 / bounded_rate);
+    send_tolerance_ =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(tolerance_s));
+}
 
 bool GsLinkCommandSink::send(
     const ManualControlSetpoint& setpoint) noexcept {
@@ -83,8 +95,9 @@ bool GsLinkCommandSink::send(
         return false;
     }
     const auto now = std::chrono::steady_clock::now();
-    if (last_send_ != std::chrono::steady_clock::time_point{} &&
-        now - last_send_ < std::chrono::milliseconds(20)) {
+    if (next_send_ != std::chrono::steady_clock::time_point{} &&
+        now + send_tolerance_ < next_send_) {
+        ++suppressed_sends_;
         return true;
     }
 
@@ -113,11 +126,31 @@ bool GsLinkCommandSink::send(
         last_errno_.store(
             gs.uplink_allowed ? gs.last_send_errno : 0,
             std::memory_order_relaxed);
+        next_send_ = now;
         return false;
     }
     last_error_code_.store(kCommandErrorNone, std::memory_order_relaxed);
     last_errno_.store(0, std::memory_order_relaxed);
+    if (last_send_ != std::chrono::steady_clock::time_point{}) {
+        const double interval_s =
+            std::chrono::duration<double>(now - last_send_).count();
+        if (interval_s > 0.0 && interval_s < 1.0) {
+            smoothed_send_interval_s_ =
+                smoothed_send_interval_s_ <= 0.0
+                    ? interval_s
+                    : 0.90 * smoothed_send_interval_s_ +
+                          0.10 * interval_s;
+        }
+    }
     last_send_ = now;
+    if (next_send_ == std::chrono::steady_clock::time_point{}) {
+        next_send_ = now + send_period_;
+    } else {
+        next_send_ += send_period_;
+        if (next_send_ <= now) {
+            next_send_ = now + send_period_;
+        }
+    }
     commands_sent_.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
@@ -132,6 +165,14 @@ LinkStatus GsLinkCommandSink::status() const noexcept {
         commands_sent_.load(std::memory_order_relaxed);
     result.send_errors =
         send_errors_.load(std::memory_order_relaxed);
+    result.suppressed_sends = suppressed_sends_;
+    result.target_rate_hz = target_rate_hz_;
+    result.actual_rate_hz =
+        smoothed_send_interval_s_ > 0.0
+            ? 1.0 / smoothed_send_interval_s_
+            : 0.0;
+    result.last_send_interval_ms =
+        smoothed_send_interval_s_ * 1000.0;
     result.last_error = command_error_name(
         last_error_code_.load(std::memory_order_relaxed));
     result.last_errno =

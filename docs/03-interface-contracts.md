@@ -102,9 +102,9 @@ public:
 
 | 字段 | 语义 |
 |---|---|
-| `roll` | `[-1,1]`，右滚为正，映射 `±20°` |
-| `pitch` | `[-1,1]`，低头为正，映射 `±20°` |
-| `yaw` | `[-1,1]`，PX4/FRD 右偏航角速度为正，映射 `±1.2 rad/s` |
+| `roll` | `[-1,1]`，右滚为正，映射 `±18°` |
+| `pitch` | `[-1,1]`，低头为正，映射 `±18°` |
+| `yaw` | `[-1,1]`，PX4/FRD 右偏航角速度为正；飞控满杆量程 `±1.5 rad/s` |
 | `throttle` | `[-1,1]`，映射上桨 `[0,1]` |
 
 飞控端 `LqiManualReference` 将 roll/pitch 解释为 heading-relative Euler 态度，
@@ -148,6 +148,7 @@ servo_3]`；上桨由 throttle 外部持有。
     "endpoint": "MCAvatar@192.168.31.221:3883",
     "sensor_id": 1,
     "position_scale": 0.001,
+    "expected_rate_hz": 120,
     "auto_origin": true,
     "axes_from_vrpn": [
       [1.0, 0.0, 0.0],
@@ -167,6 +168,8 @@ servo_3]`；上桨由 throttle 外部持有。
   自动选择第一路，但当前默认配置固定为 `1`。
 - Pos_Quat 消息约 110–125 Hz；位置数值按毫米解释，当前配置
   `position_scale: 0.001`。
+- `expected_rate_hz` 当前配置为 `120`，用于 VRPN 接收层识别明显到达间隔和
+  回调突发；它不替代实测帧率，也不改变控制周期。
 - 首样本只对齐 X/Y 原点，Z 保留映射后的高度。现场分别沿 X/Y/Z 单轴移动，
   已确认 VRPN 原始 X/Y/Z 与地面站 X/Y/Z 一一对应，映射使用单位矩阵；机头零
   偏航对齐 `+X`。
@@ -174,9 +177,10 @@ servo_3]`；上桨由 throttle 外部持有。
   把该差值当作真实网络时延。默认 `trust_source_timestamp: false`，UI 龄期从
   本机收到消息开始计算；只有 NTP/PTP 同步验证后才能开启。
 
-`expected_rate_hz`、`max_pose_age_ms` 和完整标定矩阵仍是后续字段。当前实际配置
-使用 `endpoint`、`sensor_id`、`position_scale`、`auto_origin`、
-`trust_source_timestamp` 和 `axes_from_vrpn`。设计还必须处理：
+当前实现使用 `expected_rate_hz`、`control.max_pose_age_ms`、
+`endpoint`、`sensor_id`、`position_scale`、`auto_origin`、
+`trust_source_timestamp` 和 `axes_from_vrpn`。完整标定矩阵和 tracking-valid
+语义仍需继续确认。设计还必须处理：
 
 - VRPN 时间戳是否可用、是否与地面站同一时钟域。
 - 服务器帧率、丢帧和 tracking valid 标志。
@@ -273,20 +277,24 @@ UI 侧，不进入控制热路径。
     "rate_hz": 100,
     "warning_pose_age_ms": 30,
     "max_pose_age_ms": 50,
-    "deadman_timeout_ms": 250
+    "deadman_timeout_ms": 250,
+    "target_slew_rate_mps": 0.30
   },
   "position_loop": {
-    "x": {"kp": 0.60, "ki": 0.01, "kd": 0.30},
-    "y": {"kp": 0.60, "ki": 0.01, "kd": 0.30},
-    "z": {"kp": 0.06, "ki": 0.01, "kd": 0.08},
+    "x": {"kp": 1.35, "ki": 0.05, "kd": 0.60},
+    "y": {"kp": 1.50, "ki": 0.06, "kd": 0.72},
+    "z": {"kp": 0.22, "ki": 0.015, "kd": 0.10},
     "max_accel_mps2": 4.0,
-    "max_tilt_rad": 0.3490658504,
+    "max_tilt_rad": 0.3141592654,
     "min_throttle": 0.20,
-    "hover_throttle": 0.56,
+    "hover_throttle": 0.606,
     "max_throttle": 0.96,
-    "z_velocity_damping": 0.08,
-    "max_yaw_rate_rad_s": 1.2,
-    "yaw_rate_kp": 2.0,
+    "z_velocity_damping": 0.35,
+    "max_yaw_rate_rad_s": 0.50,
+    "yaw_rate_kp": 1.0,
+    "yaw_rate_kd": 0.50,
+    "yaw_rate_slew_rate_rad_s2": 1.5,
+    "fc_yaw_rate_scale_rad_s": 1.5,
     "max_position_error_m": 10.0,
     "gravity_mps2": 9.80665
   },
@@ -305,6 +313,7 @@ UI 侧，不进入控制热路径。
     "remote_port": null,
     "local_ip": "0.0.0.0",
     "local_port": 39050,
+    "data_rc_rate_hz": 100.0,
     "rc_roll_channel": 1,
     "rc_pitch_channel": 2,
     "rc_throttle_channel": 3,
@@ -317,12 +326,14 @@ UI 侧，不进入控制热路径。
   "flight_log": {
     "enabled": true,
     "directory": "logs/flights",
-    "telemetry_stale_timeout_ms": 2000
+    "telemetry_stale_timeout_ms": 2000,
+    "pre_roll_s": 5.0
   },
   "vrpn": {
     "endpoint": "MCAvatar@192.168.31.221:3883",
     "sensor_id": 1,
     "position_scale": 0.001,
+    "expected_rate_hz": 120.0,
     "auto_origin": true,
     "trust_source_timestamp": false,
     "axes_from_vrpn": [

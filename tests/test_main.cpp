@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iostream>
 #include <iomanip>
+#include <iterator>
 #include <optional>
 #include <poll.h>
 #include <string>
@@ -182,6 +183,16 @@ void test_flight_logger_arm_session() {
             .rc_mapping = {},
             .telemetry_stale_timeout_ms = 2000,
             .udp_flight_transport = true,
+            .control_rate_hz = 100.0,
+            .warning_pose_age_ms = 30.0,
+            .max_pose_age_ms = 50.0,
+            .pose_source = "vrpn",
+            .pose_endpoint = "MCAvatar@192.168.31.221:3883",
+            .pose_sensor_id = 1,
+            .pose_position_scale = 0.001,
+            .pose_expected_rate_hz = 120.0,
+            .pose_auto_origin = true,
+            .pose_trust_source_timestamp = false,
         });
     std::string error;
     check(logger.start(error), "flight logger should start: " + error);
@@ -195,11 +206,30 @@ void test_flight_logger_arm_session() {
     sample.control_state = dock_ground::ControlState::Track;
     sample.pose.valid = true;
     sample.pose.sequence = 7;
+    sample.pose.received_mono_ns = 900'000'000ULL;
+    sample.pose.source_mono_ns = 1'700'000'000'000'000'000ULL;
+    sample.pose.source_time_present = true;
+    sample.pose.arrival_interval_ns = 8'333'333ULL;
+    sample.pose.source_time_interval_ns = 8'000'000ULL;
+    sample.pose.source_clock_delta_ns = 12'000'000LL;
+    sample.pose.source_sensor_id = 1;
     sample.pose.position_xyz_m = {1.2, -0.3, 1.5};
     sample.pose.q_body_to_world = {};
+    sample.pose.raw_position = {1200.0, -300.0, 1500.0};
+    sample.pose.raw_orientation = {};
     sample.pose_age_ms = 8.0;
+    sample.pose_fresh = true;
     sample.target.position_xyz_m = {1.4, -0.3, 1.5};
     sample.target.deadman = false;
+    sample.regulation.mode =
+        dock_ground::PositionRegulationMode::PrecisionHold;
+    sample.regulation.active = true;
+    sample.regulation.scheduling_enabled = true;
+    sample.regulation.horizontal_error_m = 0.083;
+    sample.regulation.vertical_error_m = 0.021;
+    sample.regulation.active_x = {0.30, 0.005, 0.90};
+    sample.regulation.active_y = {0.34, 0.005, 1.00};
+    sample.regulation.active_z = {0.08, 0.003, 0.14};
     sample.telemetry.valid = true;
     sample.telemetry_fresh = true;
     sample.heartbeat_fresh = true;
@@ -214,8 +244,6 @@ void test_flight_logger_arm_session() {
     sample.command_link.last_errno = 11;
     sample.telemetry.status_flags =
         static_cast<std::uint16_t>(
-            dock_ground::gs_link::StatusFlag::Armed) |
-        static_cast<std::uint16_t>(
             dock_ground::gs_link::StatusFlag::RcValid) |
         static_cast<std::uint16_t>(
             dock_ground::gs_link::StatusFlag::RcChannelsValid);
@@ -229,16 +257,48 @@ void test_flight_logger_arm_session() {
     sample.heartbeat.valid = true;
     sample.heartbeat.state =
         dock_ground::gs_link::FlightState::Ready;
+    sample.source_status.connected = true;
+    sample.source_status.transport_connected = true;
+    sample.source_status.name = "vrpn";
+    sample.source_status.sensor_id = 1;
+    sample.source_status.messages_received = 120;
+    sample.source_status.callbacks_received = 240;
+    sample.source_status.samples_rejected = 1;
+    sample.source_status.unselected_sensor_samples = 1;
+    sample.source_status.long_gap_count = 2;
+    sample.source_status.connect_count = 1;
+    sample.source_status.last_received_mono_ns = 900'000'000ULL;
+    sample.source_status.expected_rate_hz = 120.0;
+    sample.source_status.last_arrival_gap_ms = 8.3;
+    sample.source_status.max_arrival_gap_ms = 57.5;
+    sample.loop_metrics.target_period_ms = 10.0;
+    sample.loop_metrics.last_period_ms = 10.1;
+    sample.loop_metrics.work_ms = 1.2;
+    sample.loop_metrics.jitter_ms = 0.1;
+    sample.loop_metrics.p99_work_ms = 2.3;
+    sample.loop_metrics.p99_jitter_ms = 0.4;
+    sample.loop_metrics.overruns = 3;
+    logger.observe(sample);
+    sample.mono_ns += 10'000'000ULL;
+    sample.wall_time_ns += 10'000'000LL;
+    sample.telemetry.status_flags |= static_cast<std::uint16_t>(
+        dock_ground::gs_link::StatusFlag::Armed);
     logger.observe(sample);
 
     ++sample.mono_ns;
     sample.command_valid = true;
     sample.deadman_active = true;
+    sample.handoff_reset = true;
+    sample.handoff_reset_reason = "pose_stale";
+    sample.handoff_error =
+        "waiting for stable handoff, throttle delta=0.606";
     logger.observe(sample);
 
     ++sample.mono_ns;
     sample.command_valid = false;
     sample.deadman_active = false;
+    sample.handoff_reset = false;
+    sample.handoff_reset_reason.clear();
     logger.observe(sample);
 
     ++sample.mono_ns;
@@ -259,12 +319,46 @@ void test_flight_logger_arm_session() {
     const auto first_status = logger.status();
     check(
         first_status.sessions_written == 1U &&
-            first_status.frames_written >= 3U &&
+            first_status.frames_written >= 4U &&
             !first_status.recording,
-        "ARM -> disarm should produce one complete flight log session");
+        "pre-roll + ARM -> disarm should produce one complete flight log");
     check(
         std::filesystem::is_regular_file(first_status.current_file),
         "flight logger should create a CSV file");
+    const std::filesystem::path csv_path(first_status.current_file);
+    const std::filesystem::path metadata_path =
+        csv_path.parent_path() / (csv_path.stem().string() + ".json");
+    const std::filesystem::path summary_path =
+        csv_path.parent_path() /
+        (csv_path.stem().string() + ".summary.json");
+    {
+        std::ifstream metadata_input(metadata_path);
+        const std::string metadata{
+            std::istreambuf_iterator<char>(metadata_input),
+            std::istreambuf_iterator<char>()};
+        check(
+            metadata.find("\"schema\": 2") != std::string::npos &&
+                metadata.find("\"pose_source\":") != std::string::npos &&
+                metadata.find("\"expected_rate_hz\": 120") !=
+                    std::string::npos &&
+                metadata.find("\"max_pose_age_ms\": 50") !=
+                    std::string::npos &&
+                metadata.find("\"pre_roll_s\": 5") !=
+                    std::string::npos,
+            "flight metadata should capture motion-capture configuration");
+    }
+    {
+        std::ifstream summary_input(summary_path);
+        const std::string summary{
+            std::istreambuf_iterator<char>(summary_input),
+            std::istreambuf_iterator<char>()};
+        check(
+            summary.find("\"handoff_resets\": 1") != std::string::npos &&
+                summary.find("\"first_handoff_reset_reason\": "
+                             "\"pose_stale\"") != std::string::npos &&
+                summary.find("\"long_gaps\": 0") != std::string::npos,
+            "flight summary should retain handoff and VRPN failure evidence");
+    }
 
     std::ifstream input(first_status.current_file);
     std::string header;
@@ -280,8 +374,16 @@ void test_flight_logger_arm_session() {
         all_rows += row;
     }
     const auto commas = [](std::string_view line) {
-        return static_cast<std::size_t>(
-            std::count(line.begin(), line.end(), ','));
+        std::size_t count = 0;
+        bool quoted = false;
+        for (const char character : line) {
+            if (character == '"') {
+                quoted = !quoted;
+            } else if (character == ',' && !quoted) {
+                ++count;
+            }
+        }
+        return count;
     };
     check(
         !header.empty() && !first_row.empty() &&
@@ -292,14 +394,29 @@ void test_flight_logger_arm_session() {
             header.find("heartbeat_fresh") != std::string::npos &&
             header.find("uplink_allowed") != std::string::npos &&
             header.find("command_send_errors") != std::string::npos &&
-            header.find("command_last_error") != std::string::npos,
+            header.find("command_last_error") != std::string::npos &&
+            header.find("position_mode") != std::string::npos &&
+            header.find("active_pid_x_kp") != std::string::npos &&
+            header.find("command_actual_rate_hz") != std::string::npos &&
+            header.find("pose_received_mono_ns") != std::string::npos &&
+            header.find("pose_raw_x") != std::string::npos &&
+            header.find("vrpn_callbacks_received") != std::string::npos &&
+            header.find("vrpn_long_gap_count") != std::string::npos &&
+            header.find("handoff_reset_reason") != std::string::npos &&
+            header.find("loop_jitter_ms") != std::string::npos,
         "flight CSV should have consistent columns and RC data fields");
+    check(
+        all_rows.find(",PRECISION_HOLD,1,1,") != std::string::npos,
+        "flight CSV should record the active position regulation mode");
     check(
         all_rows.find(",RC_PASSTHROUGH,") != std::string::npos,
         "flight CSV should distinguish pre-confirmation RC passthrough");
     check(
-        all_rows.find(",udp_send_error,11,") != std::string::npos,
+        all_rows.find(",\"udp_send_error\",11,") != std::string::npos,
         "flight CSV should record command send failure details");
+    check(
+        all_rows.find(",\"pose_stale\",") != std::string::npos,
+        "flight CSV should record why position handoff was reset");
 
     sample.mono_ns += 1'000'000'000ULL;
     sample.wall_time_ns += 1'000'000'000LL;
@@ -567,6 +684,39 @@ void test_gs_link_udp() {
         "CMD_ACK should complete the pending uplink command");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(350));
+    telemetry.timestamp_ms += 1U;
+    check(
+        send_packet(
+            fake_fc, peer,
+            encode_telemetry(103U, telemetry), error),
+        "fresh telemetry should send after heartbeat expiry: " + error);
+    const auto telemetry_only_deadline =
+        std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(100);
+    while (std::chrono::steady_clock::now() < telemetry_only_deadline &&
+           !link.status().telemetry_fresh) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    status = link.status();
+    check(
+        status.telemetry_fresh && !status.heartbeat_fresh &&
+            status.uplink_allowed,
+        "DATA_RC uplink should survive a missing low-rate heartbeat");
+    check(
+        link.send(rc_request, error),
+        "DATA_RC should send with fresh telemetry and stale heartbeat: " +
+            error);
+    check(
+        wait_for_packet(
+            fake_fc, PacketClass::Data,
+            static_cast<std::uint8_t>(DataMessage::Rc),
+            packet, peer, 300, error),
+        "heartbeat-stale DATA_RC should reach fake FC: " + error);
+    check(
+        !link.send(ping, error),
+        "session commands must remain blocked while heartbeat is stale");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(350));
     status = link.status();
     check(
         !status.telemetry_fresh && !status.heartbeat_fresh &&
@@ -574,7 +724,7 @@ void test_gs_link_udp() {
         "UDP link freshness gates should expire");
     check(
         !link.send(rc_request, error),
-        "DATA_RC must stop when telemetry and heartbeat are stale");
+        "DATA_RC must stop when telemetry is stale");
 
     link.stop();
     (void)::close(fake_fc);
@@ -633,8 +783,10 @@ void test_controller() {
         pose, target, pose.received_mono_ns, hover_base);
     check(output.valid, "hover controller output should be valid");
     check(
-        std::abs(output.manual.throttle + 0.4) < 1e-6,
-        "30% upper throttle should map to -0.4 RC throttle");
+        std::abs(
+            output.upper_throttle -
+            controller.config().hover_throttle) < 1e-6,
+        "zero height error should use calibrated hover feedforward");
     check(
         std::abs(output.q_body_to_world_desired.w - 1.0) < 1e-6,
         "hover desired attitude should be identity");
@@ -650,11 +802,44 @@ void test_controller() {
     output = controller.step(
         pose, target, pose.received_mono_ns, hover_base);
     check(
+        std::abs(output.yaw_rate_right_command_rad_s) <=
+            controller.config().yaw_rate_slew_rate_rad_s2 * 0.01 + 1e-9,
+        "yaw-rate command must respect the configured slew limit");
+    for (int index = 1; index < 40; ++index) {
+        output = controller.step(
+            pose, target,
+            pose.received_mono_ns +
+                static_cast<std::uint64_t>(index) * 10'000'000ULL,
+            hover_base);
+    }
+    check(
         output.q_body_to_world_desired.z > 0.7,
         "positive yaw around +Z should rotate nose from +X toward +Y");
     check(
-        output.manual.yaw < -0.95,
-        "Dock +Z/left yaw target must map to PX4 right-yaw channel");
+        output.manual.yaw < -0.30 &&
+            output.manual.yaw >=
+                -controller.config().max_yaw_rate_rad_s /
+                    controller.config().fc_yaw_rate_scale_rad_s - 1e-6,
+        "Dock +Z yaw target must use bounded PX4 right-yaw command");
+
+    controller.reset();
+    target.yaw_rad = 0.0;
+    dock_ground::PoseSample rotating_pose = pose;
+    for (int index = 0; index < 40; ++index) {
+        const double yaw = 0.002 * static_cast<double>(index);
+        rotating_pose.q_body_to_world = {
+            std::cos(0.5 * yaw), 0.0, 0.0, std::sin(0.5 * yaw)};
+        rotating_pose.received_mono_ns =
+            pose.received_mono_ns +
+            static_cast<std::uint64_t>(index) * 10'000'000ULL;
+        target.yaw_rad = yaw;
+        output = controller.step(
+            rotating_pose, target, rotating_pose.received_mono_ns,
+            hover_base);
+    }
+    check(
+        output.yaw_rate_right_command_rad_s > 0.05,
+        "measured Dock yaw rate should produce an opposing right-yaw command");
 
     controller.reset();
     target.position_xyz_m = {1.0, 0.0, 1.5};
@@ -680,9 +865,9 @@ void test_controller() {
             output.manual.pitch > captured_rc_base.pitch &&
             std::abs(output.manual.yaw - captured_rc_base.yaw) < 1e-9 &&
             std::abs(
-                output.manual.throttle -
-                captured_rc_base.throttle) < 1e-9,
-        "height PID must start from the captured RC throttle");
+                output.upper_throttle -
+                controller.config().hover_throttle) < 1e-6,
+        "height control should use hover feedforward after the handoff hold");
 
     controller.reset();
     target.position_xyz_m = pose.position_xyz_m;
@@ -691,16 +876,18 @@ void test_controller() {
     output = controller.step(
         pose, target, pose.received_mono_ns, elevated_rc_base);
     check(
-        std::abs(output.manual.throttle - elevated_rc_base.throttle) < 1e-9,
-        "zero height error must preserve an elevated capture bumplessly");
+        std::abs(
+            output.upper_throttle -
+            controller.config().hover_throttle) < 1e-6,
+        "zero height error must not retain an elevated RC throttle");
 
     controller.reset();
     target.position_xyz_m = {0.0, 0.0, 1.0};
     output = controller.step(
         pose, target, pose.received_mono_ns, hover_base);
     check(
-        output.manual.throttle < -0.4,
-        "over-target height with a hover baseline must command descent");
+        output.upper_throttle < controller.config().hover_throttle,
+        "over-target height must command below the calibrated hover throttle");
 
     auto velocity_damped_config = dock_ground::PositionControllerConfig{};
     velocity_damped_config.z_velocity_damping = 0.08;
@@ -810,21 +997,60 @@ void test_controller() {
         std::abs(controller.config().y.kp - 0.60) < 1e-12,
         "updating X gains must not overwrite Y gains");
 
-    auto incremental_config = dock_ground::PositionControllerConfig{};
-    incremental_config.x = {1.0, 0.0, 0.0};
-    incremental_config.y = {1.0, 0.0, 0.0};
-    dock_ground::PositionController incremental(incremental_config);
+    auto position_config = dock_ground::PositionControllerConfig{};
+    position_config.x = {1.0, 0.0, 0.0};
+    position_config.y = {1.0, 0.0, 0.0};
+    dock_ground::PositionController position_controller(position_config);
     target.position_xyz_m = {1.0, 0.0, 1.5};
-    const auto first = incremental.step(
+    const auto first = position_controller.step(
         pose, target, 2'000'000'000ULL, hover_base);
     target.position_xyz_m = pose.position_xyz_m;
     const auto second =
-        incremental.step(
+        position_controller.step(
             pose, target, 2'010'000'000ULL, hover_base);
     check(
         first.acceleration_xyz_mps2.x > 0.9 &&
             std::abs(second.acceleration_xyz_mps2.x) < 1e-9,
-        "incremental X PID should respond to error delta and return to zero");
+        "position X PID should return to zero when the error is removed");
+
+    dock_ground::PositionController constant_error(position_config);
+    target.position_xyz_m = {1.0, 0.0, 1.5};
+    const auto constant_first = constant_error.step(
+        pose, target, 4'000'000'000ULL, hover_base);
+    const auto constant_second = constant_error.step(
+        pose, target, 4'010'000'000ULL, hover_base);
+    check(
+        constant_first.acceleration_xyz_mps2.x > 0.9 &&
+            constant_second.acceleration_xyz_mps2.x > 0.9,
+        "position PID must retain its absolute Kp correction at constant error");
+
+    auto low_derivative_config = dock_ground::PositionControllerConfig{};
+    low_derivative_config.x = {1.2, 0.0, 0.4};
+    dock_ground::PositionController low_derivative(low_derivative_config);
+    target.position_xyz_m = pose.position_xyz_m;
+    (void)low_derivative.step(
+        pose, target, 5'000'000'000ULL, hover_base);
+    target.position_xyz_m.x += 0.25;
+    const auto stepped = low_derivative.step(
+        pose, target, 5'010'000'000ULL, hover_base);
+    check(
+        std::abs(stepped.acceleration_xyz_mps2.x) < 0.5,
+        "a target step must not create a derivative-on-error acceleration kick");
+
+    dock_ground::PositionController velocity_feedforward(
+        low_derivative_config);
+    target.position_xyz_m = {
+        pose.position_xyz_m.x + 1.0,
+        pose.position_xyz_m.y,
+        pose.position_xyz_m.z,
+    };
+    target.target_velocity_xyz_mps = {0.5, 0.0, 0.0};
+    const auto fed_forward = velocity_feedforward.step(
+        pose, target, 5'020'000'000ULL, hover_base);
+    check(
+        std::abs(fed_forward.acceleration_xyz_mps2.x - 1.4) < 1e-6,
+        "target velocity should add the original Kd-scaled feedforward");
+    target.target_velocity_xyz_mps = {};
 
     auto damped_config = dock_ground::PositionControllerConfig{};
     damped_config.x = {0.60, 0.01, 0.30};
@@ -842,6 +1068,192 @@ void test_controller() {
                 damped_first.acceleration_xyz_mps2.x) < 0.01 &&
             damped_second.manual.pitch > 0.0,
         "D-state initialization must not kick the second PID sample");
+
+    const double half_sqrt_two =
+        std::sqrt(2.0) / 2.0;
+    dock_ground::PoseSample yawed_pose = pose;
+    yawed_pose.q_body_to_world = {
+        half_sqrt_two, 0.0, 0.0, half_sqrt_two};
+
+    controller.reset();
+    target.position_xyz_m = {
+        yawed_pose.position_xyz_m.x + 1.0,
+        yawed_pose.position_xyz_m.y,
+        yawed_pose.position_xyz_m.z,
+    };
+    target.yaw_rad = 0.0;
+    output = controller.step(
+        yawed_pose, target, 6'000'000'000ULL, hover_base);
+    check(
+        output.manual.roll > 0.0 &&
+            std::abs(output.manual.pitch) < 1e-6,
+        "world +X acceleration at absolute +90 deg VRPN yaw must use body roll");
+
+    controller.reset();
+    target.position_xyz_m = {
+        yawed_pose.position_xyz_m.x,
+        yawed_pose.position_xyz_m.y + 1.0,
+        yawed_pose.position_xyz_m.z,
+    };
+    output = controller.step(
+        yawed_pose, target, 6'010'000'000ULL, hover_base);
+    check(
+        output.manual.pitch > 0.0 &&
+            std::abs(output.manual.roll) < 1e-6,
+        "world +Y acceleration at absolute +90 deg VRPN yaw must use body pitch");
+}
+
+void test_position_mode_scheduling() {
+    dock_ground::PositionControllerConfig config{};
+    config.mode_scheduling.enabled = true;
+    config.mode_scheduling.hold_enter_dwell_s = 0.03;
+    config.mode_scheduling.hold_exit_dwell_s = 0.01;
+    config.mode_scheduling.gain_transition_time_s = 0.0;
+    dock_ground::PositionController controller(config);
+
+    dock_ground::PoseSample pose;
+    pose.valid = true;
+    pose.position_xyz_m = {0.0, 0.0, 1.5};
+    pose.q_body_to_world = {};
+    dock_ground::OperatorTarget target;
+    target.position_xyz_m = pose.position_xyz_m;
+    target.deadman = true;
+    const dock_ground::ManualControlSetpoint base{
+        0.0, 0.0, 0.0, 0.2, true};
+
+    const auto step_at =
+        [&controller, &pose, &target, &base](
+            std::uint64_t time_ns) {
+            return controller.step(pose, target, time_ns, base);
+        };
+
+    auto output = step_at(1'000'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::Approach,
+        "an initially near target should select APPROACH immediately");
+    output = step_at(1'010'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::Approach,
+        "near target should enter APPROACH");
+    (void)step_at(1'020'000'000ULL);
+    (void)step_at(1'030'000'000ULL);
+    output = step_at(1'040'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::PrecisionHold,
+        "stable near-target motion should enter PRECISION_HOLD after dwell");
+    check(
+        std::abs(output.regulation.active_x.kp -
+                 config.precision_hold.x.kp) < 1e-9 &&
+            std::abs(output.regulation.active_y.kd -
+                     config.precision_hold.y.kd) < 1e-9,
+        "precision mode should use the configured hold gains");
+
+    target.target_velocity_xyz_mps = {0.30, 0.0, 0.0};
+    output = step_at(1'050'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::FarTrack,
+        "moving target should leave precision hold immediately");
+    check(
+        std::abs(output.regulation.active_x.kp -
+                 config.x.kp) < 1e-9,
+        "moving target should restore far-track gains");
+    target.target_velocity_xyz_mps = {};
+
+    pose.received_mono_ns = 1'060'000'000ULL;
+    output = step_at(1'060'000'000ULL);
+    output = step_at(1'070'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::Approach,
+        "stationary near-target position should re-enter APPROACH");
+    (void)step_at(1'080'000'000ULL);
+    (void)step_at(1'090'000'000ULL);
+    output = step_at(1'100'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::PrecisionHold,
+        "stable position should return to PRECISION_HOLD");
+
+    pose.position_xyz_m.x = 0.23;
+    pose.received_mono_ns = 1'110'000'000ULL;
+    output = step_at(1'110'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::PrecisionHold,
+        "hold mode should remain latched during the exit dwell");
+    (void)step_at(1'120'000'000ULL);
+    output = step_at(1'130'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::Approach,
+        "sustained hold-window violation should enter APPROACH");
+
+    pose.position_xyz_m.x = 0.80;
+    pose.received_mono_ns = 1'140'000'000ULL;
+    output = step_at(1'140'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::FarTrack,
+        "large position excursion should restore FAR_TRACK");
+
+    pose.position_xyz_m.x = 0.0;
+    pose.received_mono_ns = 1'150'000'000ULL;
+    target.position_xyz_m.z = 2.0;
+    output = step_at(1'150'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::FarTrack,
+        "large vertical error should keep the fast far-track profile");
+
+    target.position_xyz_m.z = 1.7;
+    output = step_at(1'160'000'000ULL);
+    check(
+        output.regulation.mode ==
+            dock_ground::PositionRegulationMode::Approach,
+        "zero horizontal error and a near vertical error should enter APPROACH");
+
+    auto smooth_config = config;
+    smooth_config.mode_scheduling.gain_transition_time_s = 0.20;
+    dock_ground::PositionController smooth_controller(smooth_config);
+    dock_ground::PoseSample smooth_pose;
+    smooth_pose.valid = true;
+    smooth_pose.position_xyz_m = {1.0, 0.0, 1.5};
+    smooth_pose.q_body_to_world = {};
+    smooth_pose.received_mono_ns = 2'000'000'000ULL;
+    dock_ground::OperatorTarget smooth_target;
+    smooth_target.position_xyz_m = {0.0, 0.0, 1.5};
+    smooth_target.deadman = true;
+    (void)smooth_controller.step(
+        smooth_pose, smooth_target, 2'000'000'000ULL, base);
+    smooth_pose.position_xyz_m.x = 0.40;
+    smooth_pose.received_mono_ns = 2'010'000'000ULL;
+    const auto transitioning = smooth_controller.step(
+        smooth_pose, smooth_target, 2'010'000'000ULL, base);
+    check(
+        transitioning.regulation.mode ==
+            dock_ground::PositionRegulationMode::Approach,
+        "mode change should select APPROACH before gain blending");
+    check(
+        transitioning.regulation.gain_transition_active,
+        "gain blending should report an active transition");
+    check(
+        transitioning.regulation.active_x.kp >
+                std::min(
+                    smooth_config.approach.x.kp,
+                    smooth_config.x.kp) &&
+            transitioning.regulation.active_x.kp <
+                std::max(
+                    smooth_config.approach.x.kp,
+                    smooth_config.x.kp),
+        "mode changes should blend gains without an instantaneous jump: "
+        "expected (" +
+            std::to_string(smooth_config.approach.x.kp) + ", " +
+            std::to_string(smooth_config.x.kp) + "), got " +
+            std::to_string(transitioning.regulation.active_x.kp));
 }
 
 void test_config() {
@@ -861,6 +1273,12 @@ void test_config() {
         check(
             config->vrpn_sensor_id == 1,
             "example config should bind body1/sensor 1");
+        check(
+            std::abs(config->vrpn_expected_rate_hz - 120.0) < 1e-9,
+            "example config should declare the expected VRPN rate");
+        check(
+            std::abs(config->flight_log_pre_roll_s - 5.0) < 1e-9,
+            "example config should retain five seconds before ARM");
         const std::array<double, 9> identity{
             1.0, 0.0, 0.0,
             0.0, 1.0, 0.0,
@@ -886,23 +1304,23 @@ void test_config() {
             "phase 1 transport should be loopback");
         check(
             std::abs(config->position_loop.max_tilt_rad -
-                     0.3490658504) < 1e-9 &&
-            std::abs(config->position_loop.hover_throttle - 0.56) <
+                     0.3141592654) < 1e-9 &&
+            std::abs(config->position_loop.hover_throttle - 0.606) <
                     1e-9,
-            "position loop should use 20 deg and latest-flight 56% hover");
+            "position loop should use FC-matched 18 deg and calibrated hover");
         check(
-            std::abs(config->position_loop.x.kp - 0.60) < 1e-9 &&
-                std::abs(config->position_loop.x.ki - 0.01) < 1e-9 &&
-                std::abs(config->position_loop.x.kd - 0.30) < 1e-9 &&
-                std::abs(config->position_loop.y.kp - 0.60) < 1e-9 &&
-                std::abs(config->position_loop.y.ki - 0.01) < 1e-9 &&
-                std::abs(config->position_loop.y.kd - 0.30) < 1e-9,
-            "position X/Y gains should load the conservative manual-flight tune");
+            std::abs(config->position_loop.x.kp - 1.35) < 1e-9 &&
+                std::abs(config->position_loop.x.ki - 0.05) < 1e-9 &&
+                std::abs(config->position_loop.x.kd - 0.60) < 1e-9 &&
+                std::abs(config->position_loop.y.kp - 1.50) < 1e-9 &&
+                std::abs(config->position_loop.y.ki - 0.06) < 1e-9 &&
+                std::abs(config->position_loop.y.kd - 0.72) < 1e-9,
+            "position X/Y far gains should match the latest flight");
         check(
-            std::abs(config->position_loop.z.kp - 0.06) < 1e-9 &&
-                std::abs(config->position_loop.z.ki - 0.01) < 1e-9 &&
-                std::abs(config->position_loop.z.kd - 0.08) < 1e-9,
-            "position Z gains should load the conservative manual-flight tune");
+            std::abs(config->position_loop.z.kp - 0.22) < 1e-9 &&
+                std::abs(config->position_loop.z.ki - 0.015) < 1e-9 &&
+                std::abs(config->position_loop.z.kd - 0.10) < 1e-9,
+            "position Z far gains should match the latest flight");
         check(
             config->rc_mapping.roll == 1 &&
                 config->rc_mapping.pitch == 2 &&
@@ -919,9 +1337,44 @@ void test_config() {
                     0.10) < 1e-9,
             "RC mapping and safe handoff windows should load");
         check(
-            std::abs(config->position_loop.z_velocity_damping - 0.08) <
+            std::abs(config->position_loop.z_velocity_damping - 0.35) <
                 1e-9,
             "vertical velocity damping should load");
+        check(
+            config->position_loop.mode_scheduling.enabled &&
+                std::abs(
+                    config->position_loop.mode_scheduling
+                        .hold_enter_distance_m -
+                    0.12) < 1e-9 &&
+                std::abs(
+                    config->position_loop.mode_scheduling
+                        .hold_exit_distance_m -
+                    0.22) < 1e-9 &&
+                std::abs(
+                    config->position_loop.approach.x.kd -
+                    1.10) < 1e-9 &&
+                std::abs(
+                    config->position_loop.precision_hold.y.kp -
+                    0.34) < 1e-9,
+            "three-state position scheduling parameters should load");
+        check(
+            std::abs(config->target_slew_rate_mps - 0.30) < 1e-9,
+            "target position slew rate should load");
+        check(
+            std::abs(config->data_rc_rate_hz - 100.0) < 1e-9,
+            "DATA_RC output rate should load at 100 Hz");
+        check(
+            std::abs(config->position_loop.max_yaw_rate_rad_s - 0.50) <
+                    1e-9 &&
+                std::abs(config->position_loop.yaw_rate_kp - 1.0) < 1e-9 &&
+                std::abs(config->position_loop.yaw_rate_kd - 0.50) < 1e-9 &&
+                std::abs(
+                    config->position_loop.yaw_rate_slew_rate_rad_s2 -
+                    1.5) < 1e-9 &&
+                std::abs(
+                    config->position_loop.fc_yaw_rate_scale_rad_s -
+                    1.5) < 1e-9,
+            "yaw damping, rate limit, slew and FC scale should load");
         check(
             config->flight_log_enabled &&
                 config->flight_log_directory == "logs/flights" &&
@@ -946,6 +1399,9 @@ void test_config() {
             gs_config->flight_protocol == "gs_link_v1",
             "GS-Link example should select the v1 protocol");
         check(
+            std::abs(gs_config->data_rc_rate_hz - 100.0) < 1e-9,
+            "GS-Link example should send DATA_RC at 100 Hz");
+        check(
             gs_config->esp32_port.has_value() &&
                 gs_config->gs_link_bind_port.has_value(),
             "GS-Link example should define both UDP ports");
@@ -953,6 +1409,25 @@ void test_config() {
             gs_config->esp32_port == 14550U &&
                 gs_config->gs_link_bind_port == 39050U,
             "GS-Link example should use C5 14550 and GCS 39050");
+        check(
+            gs_config->gs_link_heartbeat_rate_hz == 20.0 &&
+                gs_config->gs_link_heartbeat_timeout_ms == 500U,
+            "GS-Link example should use resilient heartbeat settings");
+        check(
+            std::abs(
+                gs_config->position_loop.hover_throttle - 0.606) < 1e-9 &&
+                std::abs(
+                    gs_config->position_loop.z_velocity_damping -
+                    0.35) < 1e-9,
+            "GS-Link example should use calibrated hover feedforward");
+        check(
+            std::abs(gs_config->position_loop.x.kp - 1.35) < 1e-9 &&
+                std::abs(gs_config->position_loop.x.ki - 0.05) < 1e-9 &&
+                std::abs(gs_config->position_loop.x.kd - 0.60) < 1e-9 &&
+                std::abs(gs_config->position_loop.y.kp - 1.50) < 1e-9 &&
+                std::abs(gs_config->position_loop.y.ki - 0.06) < 1e-9 &&
+                std::abs(gs_config->position_loop.y.kd - 0.72) < 1e-9,
+            "GS-Link example should use damped horizontal gains");
     }
 }
 
@@ -1004,6 +1479,14 @@ void test_runtime() {
     check(
         tuning != nullptr,
         "runtime snapshot should expose live position tuning");
+    const auto* position_mode =
+        state_json ? state_json->find("position_mode") : nullptr;
+    check(
+        position_mode != nullptr &&
+            position_mode->find("mode") != nullptr &&
+            position_mode->find("active") != nullptr &&
+            position_mode->find("active_gains") != nullptr,
+        "runtime snapshot should expose position regulation mode and gains");
     runtime.stop();
 }
 
@@ -1050,6 +1533,7 @@ void test_runtime_gs_link_snapshot() {
     config.esp32_port =
         static_cast<std::uint16_t>(ntohs(fake_address.sin_port));
     config.gs_link_heartbeat_rate_hz = 20.0;
+    config.data_rc_rate_hz = 100.0;
     config.gs_link_telemetry_timeout_ms = 3000;
     config.gs_link_heartbeat_timeout_ms = 3000;
 
@@ -1210,12 +1694,12 @@ void test_runtime_gs_link_snapshot() {
     }
     RcCommand moved_passthrough_rc;
     bool moved_passthrough_seen = false;
-    for (int attempt = 0; attempt < 10 && !moved_passthrough_seen;
+    for (int attempt = 0; attempt < 100 && !moved_passthrough_seen;
          ++attempt) {
         if (!wait_for_packet(
                 fake_fc, PacketClass::Data,
                 static_cast<std::uint8_t>(DataMessage::Rc),
-                packet, peer, 50, error)) {
+                packet, peer, 10, error)) {
             break;
         }
         moved_passthrough_seen =
@@ -1281,7 +1765,7 @@ void test_runtime_gs_link_snapshot() {
     bool post_hold_packet_seen = false;
     const auto transition_deadline =
         std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(400);
+        std::chrono::milliseconds(800);
     while (std::chrono::steady_clock::now() < transition_deadline &&
            !post_hold_packet_seen) {
         if (wait_for_packet(
@@ -1290,8 +1774,10 @@ void test_runtime_gs_link_snapshot() {
                 packet, peer, 50, error) &&
             decode_data_rc(
                 packet, after_hold_rc, sender_time, error)) {
+            const auto transition_state = runtime.snapshot();
             post_hold_packet_seen =
-                !runtime.snapshot().rc_handoff_hold;
+                !transition_state.rc_handoff_hold &&
+                transition_state.rc_handoff_throttle_blend >= 0.999;
         }
     }
     const auto post_hold_state = runtime.snapshot();
@@ -1302,8 +1788,14 @@ void test_runtime_gs_link_snapshot() {
                 post_hold_state.handoff_vertical_speed_mps) &&
             std::abs(
                 after_hold_rc.throttle -
-                handoff_state.rc_handoff_base.throttle * 10000.0) <= 3000,
-        "height control should start bumplessly from the captured throttle");
+                (2.0 * config.position_loop.hover_throttle - 1.0) *
+                    10000.0) <= 1500.0,
+        "height control should transition from RC to hover feedforward");
+    check(
+        std::abs(post_hold_state.link.target_rate_hz - 100.0) < 1e-9 &&
+            post_hold_state.link.actual_rate_hz > 50.0 &&
+            post_hold_state.link.last_send_interval_ms < 30.0,
+        "DATA_RC deadline scheduler should report the effective 100 Hz rate");
 
     FlightTelemetry fc_still_rc = telemetry;
     fc_still_rc.timestamp_ms += 100U;
@@ -1499,14 +1991,43 @@ void test_position_tuning_websocket() {
         << "\"x\":{\"kp\":2.75,\"ki\":0.12,\"kd\":0.31},"
         << "\"y\":{\"kp\":1.25,\"ki\":0.09,\"kd\":0.22},"
         << "\"z\":{\"kp\":0.11,\"ki\":0.21,\"kd\":0.09},"
+        << "\"approach\":{"
+        << "\"x\":{\"kp\":0.81,\"ki\":0.02,\"kd\":1.11},"
+        << "\"y\":{\"kp\":0.82,\"ki\":0.02,\"kd\":1.12},"
+        << "\"z\":{\"kp\":0.13,\"ki\":0.006,\"kd\":0.15}},"
+        << "\"precision_hold\":{"
+        << "\"x\":{\"kp\":0.31,\"ki\":0.006,\"kd\":0.91},"
+        << "\"y\":{\"kp\":0.32,\"ki\":0.006,\"kd\":0.92},"
+        << "\"z\":{\"kp\":0.09,\"ki\":0.004,\"kd\":0.13}},"
+        << "\"mode_scheduling\":{"
+        << "\"enabled\":true,"
+        << "\"brake_enter_distance_m\":0.54,"
+        << "\"brake_exit_distance_m\":0.74,"
+        << "\"brake_enter_vertical_error_m\":0.29,"
+        << "\"brake_exit_vertical_error_m\":0.39,"
+        << "\"hold_enter_distance_m\":0.11,"
+        << "\"hold_exit_distance_m\":0.21,"
+        << "\"hold_enter_vertical_error_m\":0.05,"
+        << "\"hold_exit_vertical_error_m\":0.11,"
+        << "\"hold_enter_speed_mps\":0.07,"
+        << "\"hold_exit_speed_mps\":0.14,"
+        << "\"hold_enter_vertical_speed_mps\":0.04,"
+        << "\"hold_exit_vertical_speed_mps\":0.09,"
+        << "\"target_motion_speed_mps\":0.02,"
+        << "\"hold_enter_dwell_s\":0.45,"
+        << "\"hold_exit_dwell_s\":0.18,"
+        << "\"gain_transition_time_s\":0.55},"
         << "\"max_accel_mps2\":3.5,"
-        << "\"max_tilt_rad\":0.3490658504,"
+        << "\"max_tilt_rad\":0.3141592654,"
         << "\"min_throttle\":0.2,"
         << "\"hover_throttle\":0.56,"
         << "\"max_throttle\":0.96,"
         << "\"z_velocity_damping\":0.08,"
-        << "\"max_yaw_rate_rad_s\":1.2,"
-        << "\"yaw_rate_kp\":2.1,"
+        << "\"max_yaw_rate_rad_s\":0.5,"
+        << "\"yaw_rate_kp\":1.1,"
+        << "\"yaw_rate_kd\":0.65,"
+        << "\"yaw_rate_slew_rate_rad_s2\":2.0,"
+        << "\"fc_yaw_rate_scale_rad_s\":1.5,"
         << "\"max_position_error_m\":10,"
         << "\"gravity_mps2\":9.80665}}";
     const auto frame = masked_text_frame(tuning_payload.str());
@@ -1537,8 +2058,25 @@ void test_position_tuning_websocket() {
             std::abs(runtime.position_tuning().y.ki - 0.09) < 1e-9 &&
             std::abs(
                 runtime.position_tuning().z_velocity_damping -
-                0.08) < 1e-9,
+                0.08) < 1e-9 &&
+            std::abs(runtime.position_tuning().yaw_rate_kd - 0.65) <
+                1e-9 &&
+            std::abs(
+                runtime.position_tuning().yaw_rate_slew_rate_rad_s2 -
+                2.0) < 1e-9,
         "WebSocket tuning should hot-update independent PID axes");
+    check(
+        std::abs(
+            runtime.position_tuning().approach.x.kd -
+            1.11) < 1e-9 &&
+            std::abs(
+                runtime.position_tuning().precision_hold.y.kp -
+                0.32) < 1e-9 &&
+            std::abs(
+                runtime.position_tuning().mode_scheduling
+                    .hold_enter_distance_m -
+                0.11) < 1e-9,
+        "WebSocket tuning should preserve editable mode profiles");
 
     (void)::close(client);
     server.stop();
@@ -1573,6 +2111,48 @@ void test_initial_target_from_pose() {
     runtime.stop();
 }
 
+void test_target_position_slew_limit() {
+    dock_ground::AppConfig config;
+    config.flight_log_enabled = false;
+    config.control_rate_hz = 100.0;
+    config.simulated_pose_rate_hz = 100.0;
+    config.pose_source = "simulated";
+    config.initial_target_use_current_pose = true;
+    config.deadman_timeout_ms = 2000.0;
+    config.target_slew_rate_mps = 0.50;
+
+    dock_ground::Runtime runtime(config);
+    runtime.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const auto before = runtime.snapshot();
+
+    dock_ground::OperatorTarget target;
+    target.position_xyz_m = before.target.position_xyz_m;
+    target.position_xyz_m.y += 0.25;
+    target.yaw_rad = before.target.yaw_rad;
+    target.deadman = true;
+    check(
+        runtime.apply_operator_target(target),
+        "runtime should accept a target for slew limiting");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto ramping = runtime.snapshot();
+    const double partial_step =
+        std::abs(ramping.target.position_xyz_m.y -
+                 before.target.position_xyz_m.y);
+    check(
+        partial_step > 0.01 && partial_step < 0.20,
+        "target update should ramp instead of jumping in one control cycle");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(550));
+    const auto completed = runtime.snapshot();
+    check(
+        std::abs(completed.target.position_xyz_m.y -
+                 target.position_xyz_m.y) < 1e-6,
+        "target should reach the requested point after the slew interval");
+    runtime.stop();
+}
+
 }  // namespace
 
 int main() {
@@ -1582,11 +2162,13 @@ int main() {
     test_gs_link_udp();
     test_websocket_protocol();
     test_controller();
+    test_position_mode_scheduling();
     test_config();
     test_runtime();
     test_runtime_gs_link_snapshot();
     test_position_tuning_websocket();
     test_initial_target_from_pose();
+    test_target_position_slew_limit();
 
     if (g_failures != 0) {
         std::cerr << g_failures << " test(s) failed\n";

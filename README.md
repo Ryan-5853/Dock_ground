@@ -1,13 +1,13 @@
 # Dock Ground Station
 
 面向局域网飞行的低延迟地面站。地面站从 VRPN 动捕服务器取得位姿，在 C++
-后端运行三轴增量 PID 位置闭环，经 ESP32-C5 + Dronebridge 透明链路向飞控发送
+后端运行三轴位置 PID 和实测速度阻尼闭环，经 ESP32-C5 + Dronebridge 透明链路向飞控发送
 `roll / pitch / yaw-rate / throttle` 四通道指令；WebUI 负责三维示意、状态监控、
 位置目标输入和在线调参。
 
 > 当前状态：C++ 后端已接入 `192.168.31.221:3883` 的真实 VRPN 位姿，100 Hz
 > 位置环、loopback、GS-Link 四通道输出、同源 HTTP/WebSocket 和 Three.js WebUI
-> 已联通。WebUI 可按 X/Y/Z 分别调整 Kp/Ki/Kd，并热更新运行中的增量 PID。
+> 已联通。WebUI 可按 X/Y/Z 分别调整 Kp/Ki/Kd，并热更新运行中的位置 PID。
 > 飞控侧已按 `GS_LINK_PROTOCOL_V1_zh.md` 接入 GS-Link v1：UDP 双向收发、
 > 心跳/遥测新鲜度、会话、ACK 重试和显式上行接口均已实现，WebUI 显示飞控姿态、
 > 电池、双电机 RPM、RC 通道和链路统计。飞控每次 ARM 都会自动开始独立飞行
@@ -34,8 +34,8 @@ cd ..
 ```
 
 浏览器打开 `http://127.0.0.1:8080`。点击“使能控制”或按空格键切换下行控制后，
-前端以 20 Hz 发送操作意图，C++ 后端以 100 Hz 运行三轴增量 PID，并以最高
-50 Hz 发送 `DATA_RC` 四通道；再次点击、再次按空格或窗口失焦会释放 deadman。
+前端以 20 Hz 发送操作意图，C++ 后端以 100 Hz 运行三轴位置 PID，并以可配置的
+100 Hz 发送 `DATA_RC` 四通道；再次点击、再次按空格或窗口失焦会释放 deadman。
 若要从另一台局域网设备访问 WebUI，启动时显式改为
 `--http-bind 0.0.0.0`，并先用主机防火墙限制可访问来源。
 
@@ -91,8 +91,8 @@ PX4 `RC_MAP_ROLL/PITCH/THROTTLE/YAW` 一致；默认 AETR 为
 飞控遥测中最新 RC 四通道的实时透传值。飞控确认 `GS_MODE_ACTIVE` 后，地面站
 重新采样最新 RC，并检查垂速和油门是否位于安全接管窗口。只有 `|vz|` 和当前
 上桨油门相对悬停值的偏差都满足限制后，才至少保持 `bumpless_hold_ms`
-（默认 40 ms，约两个 50 Hz 包）并启动位置环。R/P/Y 从该基线叠加增量 PID；
-Z PID 从捕获的上桨油门起步，并叠加 `z_velocity_damping` 垂速制动。高度通道按
+（默认 40 ms，约四个 100 Hz 包）并启动位置环。R/P/Y 从该基线叠加位置 PID；
+Z PID 使用标定悬停油门前馈，并叠加 `z_velocity_damping` 垂速制动。高度通道按
 `throttle_transition_ms`（默认 300 ms 走完满量程）限制变化速率，从切换油门
 过渡到绝对上桨油门。基线越接近目标完成越快，不会再固定等待完整 300 ms。
 
@@ -109,9 +109,10 @@ dock_ground local_port ── UDP ──> ESP32 remote_port ── FC UART
 即电脑 `39050 → C5:14550`；C5 自动学习或主动登记后，回传
 `C5 → 电脑:39050`，双向始终使用同一个本地 UDP socket。
 
-后端在 FC 遥测和心跳均新鲜时才允许 `DATA_RC` 和指令上行。遥测超过 250 ms 或
-心跳超过 300 ms 后，上行立即停止；恢复后需要重新收到新心跳/遥测。这里的门控
-只是地面站侧保护，飞控侧 `GroundStationGate` 和物理 RC 仍是最终授权来源。
+`DATA_RC` 只要求 FC 遥测新鲜，不受低频心跳偶发缺失影响；起飞/降落/Abort
+等会话命令仍要求遥测和心跳同时新鲜。心跳默认 20 Hz、超时 500 ms，`DATA_RC`
+默认保持 100 Hz、FC 侧超时 250 ms。这里的门控只是地面站侧保护，飞控侧
+`GroundStationGate` 和物理 RC 仍是最终授权来源。
 GS-Link CRC 与 WebSocket 均不是认证；开放 LAN 访问前必须限制可信来源，协议级
 HMAC/重放保护尚未实现。
 
@@ -121,12 +122,33 @@ HMAC/重放保护尚未实现。
 ./build/dock_ground_vrpn_probe MCAvatar@192.168.31.221:3883 5
 ```
 
+做静置稳定性测试并保留逐 callback 原始数据：
+
+```bash
+python3 scripts/test_vrpn_stability.py --duration 300
+```
+
+脚本自动读取配置中的 endpoint/sensor，输出到 `logs/vrpn-stability/`，报告帧率、
+到达间隔 p95/p99/最大值、长间隔、追帧突发、源时间戳异常和位姿跳变。主动运动或
+遮挡实验使用 `--motion --label <名称>`。
+
+需要判断问题在 UDP 到达前还是地面站 callback 处理阶段时，运行联合抓包测试：
+
+```bash
+python3 scripts/test_vrpn_wire.py --duration 180 --label wire-baseline
+```
+
+该脚本同步运行 `tcpdump`、VRPN 探针和持续 ping，并在
+`logs/vrpn-wire/` 输出 `pcap`、callback CSV 和自动归因报告。
+
 ## 已确定的技术路线
 
 - **实时控制只在 C++ 后端。** 100 Hz 外环读取最新 VRPN 位姿，计算结果直接
   编码并发送。浏览器刷新、React 调度、WebSocket 抖动和人工操作都不进入实时环。
-- **位置闭环采用三轴独立增量 PID。** X/Y 输出世界系加速度，再转换为
-  heading-relative roll/pitch 态度；Z 输出上桨集体油门。飞控里的最新辨识
+- **位置闭环采用三轴独立位置 PID、实测速度阻尼和三态位置调度。** 远场使用
+  快速追踪参数，接近目标后进入高阻尼制动，稳定后才进入低带宽精保；目标移动
+  会立即退出精保，切换保持速度和积分状态并平滑过渡。X/Y 输出世界系加速度，
+  再使用 VRPN 绝对航向转换为机体 roll/pitch；Z 输出上桨集体油门。飞控里的最新辨识
   19 状态复合 LQI 负责 `[lower_motor, servo_1, servo_2, servo_3]` 和全部高频
   安全层，上桨油门仍由地面站/飞手侧高度环持有。
 - **RC → 地面站采用 bumpless handoff。** 仅在物理 RC 已解锁、有效、通道 8
@@ -139,7 +161,8 @@ HMAC/重放保护尚未实现。
   独立线程中完成。
 - **控制链路以 UDP 为主。** ESP32-C5 地址固定为 `192.168.31.100`，目标 UDP
   监听口固定为 `14550`，电脑本地端口使用 `39050`。GS-Link v1 一包占一个 UDP
-  datagram；`DATA_RC` 不重传，指令按 20 ms/最多 4 次发送重试并校验 ACK。
+  datagram；`DATA_RC` 默认 100 Hz、不重传；起飞/降落/Abort 等会话命令按
+  20 ms/最多 4 次发送重试并校验 ACK。
 - **飞控线协议固定为 GS-Link v1。** 帧头、CRC-16/CCITT-FALSE、小端定宽字段、
   遥测状态位、会话和上行指令均按协议实现。位置/速度不在 v1 基础遥测中，前端
   不会把缺失值当作零。
@@ -159,7 +182,9 @@ HMAC/重放保护尚未实现。
 - **统一坐标和单位。** 地面站、飞机实例和 VRPN 适配层统一使用右手局部 XYZ：
   `+X=前、+Y=左、+Z=上`，飞机机头固定为 `+X`，偏航绕 `+Z`。输出到
   `DATA_RC` 时转换为 PX4 约定：roll 右滚为正、pitch 低头为正、yaw rate
-  右偏航为正、throttle 上桨 `[-1,1]`。
+  右偏航为正、throttle 上桨 `[-1,1]`。飞控无磁力计时其偏航从上电积分，
+  不能作为世界航向基准；位置控制只使用 VRPN 绝对航向。航向环对动捕
+  yaw-rate 做阻尼，并同时限制物理角速度、指令斜率和飞控满杆量程。
 - **正式部署采用 Linux 原生进程。** 单个 C++ 服务同时提供静态 WebUI、HTTP 和
   WebSocket。Docker、反向代理和浏览器不放在飞行控制数据路径上。
 
@@ -169,8 +194,8 @@ HMAC/重放保护尚未实现。
 VRPN 动捕服务器 ──TCP 建链 + UDP 数据──> C++ VRPN 接收线程
                               │ 最新位姿（覆盖式，不排队）
                               v
-WebUI 操作意图 ──WS──> ── 100 Hz X/Y/Z 增量 PID ──> roll / pitch / yaw-rate / throttle
-                                                     │ DATA_RC @ ≤50 Hz
+WebUI 操作意图 ──WS──> ── 100 Hz X/Y/Z 位置 PID + 速度阻尼 ──> roll / pitch / yaw-rate / throttle
+                                                     │ DATA_RC @ 100 Hz
                                                      v
                                       GS-Link UDP / Dronebridge
                                                      │
@@ -215,13 +240,14 @@ VRPN 丢失和后端崩溃都必须由飞控自身 failsafe 兜底，不能只�
 include/dock_ground/      公共接口、数学、控制、网络与运行时
 src/                      控制循环、VRPN/仿真位姿、JSON、HTTP/WS
 tests/                    数学、控制、配置、WebSocket 协议测试
+scripts/                  动捕稳定性采集与分析脚本
 frontend/                 Vite + TypeScript + React + Three.js
 config/ground.json        阶段 1 运行配置
 docs/                     技术文档
 CMakeLists.txt
 ```
 
-当前已实现 GS-Link v1 的 ESP32 UDP 端点、飞控遥测显示、三轴增量 PID 在线调参
+当前已实现 GS-Link v1 的 ESP32 UDP 端点、飞控遥测显示、三轴位置 PID 在线调参
 和四通道 `DATA_RC` 输出；尚未完成实际 ESP32/AP/飞控台架联调、端到端时延报告
 和真实闭环参数整定。默认配置仍是 `LOOPBACK ONLY`，不能把开发机结果当作可飞
 状态。

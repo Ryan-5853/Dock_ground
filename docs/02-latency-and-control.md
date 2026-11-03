@@ -87,33 +87,48 @@ else:
             │
 测量 p, 估计 v（诊断）
             v
-X/Y/Z 独立增量 PID
+X/Y/Z 独立位置 PID + 实测速度阻尼
             │
             v
-X/Y 加速度 -> roll/pitch 态度；Z -> 上桨油门
-航向误差 -> yaw-rate
+X/Y 加速度 + VRPN 绝对航向 -> roll/pitch；Z -> 上桨油门
+航向误差 - 实测 yaw-rate -> 有阻尼 yaw-rate
             │
             v
 GS-Link DATA_RC -> 辨识 LQR lower motor + servo 1/2/3
 ```
 
-三轴均采用同一增量形式，但 X/Y/Z 的 Kp/Ki/Kd 完全独立：
+三轴均采用同一位置式形式，但 X/Y/Z 的 Kp/Ki/Kd 完全独立：
 
 ```text
-du = Kp*(e[k]-e[k-1]) + Ki*e[k]*dt
-     + Kd*(e[k]-2e[k-1]+e[k-2])/dt
-u[k] = clamp(u[k-1] + du)
+integral[k] = integral[k-1] + Ki*e[k]*dt
+u[k] = Kp*e[k] + integral[k]
+       + Kd*(v_target[k]-v_measured[k])
 ```
 
 - X/Y 的 `u` 是加速度指令，`m/s²`；Z 的 `u` 是上桨归一化油门，必须位于
   `[min_throttle,max_throttle]`。Z 映射为绝对
   `DATA_RC.throttle=2*u-1`；RC 切换基线只用于限时 bumpless 过渡，不能永久
   限制高度环的向下权限。
-- VRPN 差分垂速还用于 Z 通道轻量阻尼 `-z_velocity_damping*vz`；X/Y 不增加
-  额外速度环，避免重复阻尼。接管前也使用滤波垂速判断是否允许进入位置环。
-- 首次激活忽略 D 脉冲；输出饱和后把积分器固定在饱和值，防止继续累积。
+- Kp/Ki/Kd 沿用原参数尺度。该位置式结构对静止目标与旧增量式实现代数等价，
+  但 D 项直接使用 VRPN 滤波速度和斜坡目标速度，不再对目标位置做二阶差分。
+- VRPN 差分垂速还用于 Z 通道额外阻尼 `-z_velocity_damping*vz`。接管前也使用
+  滤波垂速判断是否允许进入位置环。
+- 位置积分采用条件抗饱和；Z 使用标定悬停油门前馈，RC 切换油门只作为
+  `throttle_transition_ms` 内的无扰过渡起点。
 - X/Y 加速度按 `max_accel` 和 `g*tan(max_tilt)` 联合限幅。
-- 期望机体 `+Z` 轴由水平加速度和重力确定；位置局部 `+X` 固定为机头方向。
+- 位置控制器内部使用 `FAR_TRACK / APPROACH / PRECISION_HOLD` 三态调度：
+  远场使用快速参数，接近目标后先进入高阻尼制动，误差、速度、垂直偏差和驻留
+  时间同时满足后才进入低带宽精保；目标移动会立即退出精保。
+- 三档增益切换保持同一套速度估计和积分状态，并在
+  `gain_transition_time_s` 内平滑过渡。目标滑动期间冻结积分，避免远端阶跃造成
+  近场积分过冲。
+- 期望机体 `+Z` 轴由水平加速度和重力确定。roll/pitch 使用 VRPN 绝对当前航向
+  分解，目标偏航只生成 yaw-rate；飞控无磁力计时的积分航向不参与位置解耦。
+- yaw-rate 指令使用 `Kp*角度误差 - Kd*实测角速度`，再经过物理限幅和指令斜率
+  限制。飞控 `DATA_RC.yaw` 的归一化尺度单独使用与飞控模型一致的满杆量程。
+- `DATA_RC` 默认按 `flight.data_rc_rate_hz=100` 使用绝对 deadline 调度，与
+  100 Hz 外环同步；调度容差只用于吸收控制线程的小幅抖动，不能通过硬性
+  “距上次不足周期就丢弃”制造 30 ms 的量化间隔。
 - 输出姿态四元数只供 UI/诊断；飞控实际接收四通道手动量。
 
 ### 5.2 延迟补偿

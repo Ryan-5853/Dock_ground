@@ -20,6 +20,7 @@ struct AppConfig {
     double warning_pose_age_ms{30.0};
     double max_pose_age_ms{50.0};
     double deadman_timeout_ms{250.0};
+    double target_slew_rate_mps{0.30};
 
     PositionLoopTuning position_loop{};
 
@@ -40,14 +41,17 @@ struct AppConfig {
     std::uint16_t gs_link_telemetry_timeout_ms{250};
     std::uint16_t gs_link_heartbeat_timeout_ms{300};
     double gs_link_heartbeat_rate_hz{10.0};
+    double data_rc_rate_hz{100.0};
     RcChannelMapping rc_mapping{};
     bool flight_log_enabled{true};
     std::string flight_log_directory{"logs/flights"};
     std::uint16_t flight_log_stale_timeout_ms{2000};
+    double flight_log_pre_roll_s{5.0};
 
     std::string vrpn_endpoint{"MCAvatar@192.168.31.221:3883"};
     int vrpn_sensor_id{1};
     double vrpn_position_scale{0.001};
+    double vrpn_expected_rate_hz{120.0};
     bool vrpn_auto_origin{true};
     bool vrpn_trust_source_timestamp{false};
     Mat3 vrpn_axes_from_vrpn{

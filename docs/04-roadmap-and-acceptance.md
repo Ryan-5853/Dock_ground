@@ -92,7 +92,7 @@ deadman 联调；30 分钟浸泡和故障注入门尚未完成。
 交付：
 
 - 按冻结的飞控线协议实现 `ICommandCodec` 和下行状态解析。
-- 三轴增量 PID 到四通道 roll/pitch/yaw-rate/throttle 映射、序号、过期帧拒绝和
+- 三轴位置 PID 和速度阻尼到四通道 roll/pitch/yaw-rate/throttle 映射、序号、过期帧拒绝和
   ACK 回显。
 - 飞控模式/解锁/降落管理消息（协议支持时）。
 - 飞控端超时和地面站端超时联合测试。

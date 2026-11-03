@@ -627,11 +627,18 @@ struct UdpLink::Impl {
         return true;
     }
 
-    bool link_ready_locked(Clock::time_point now) const noexcept {
+    bool telemetry_link_ready_locked(
+        Clock::time_point now) const noexcept {
         return transport_connected &&
+               heartbeat.valid &&
                fresh(now, last_telemetry_rx,
                      config.telemetry_timeout_ms,
-                     telemetry.valid) &&
+                     telemetry.valid);
+    }
+
+    bool command_link_ready_locked(
+        Clock::time_point now) const noexcept {
+        return telemetry_link_ready_locked(now) &&
                fresh(now, last_heartbeat_rx,
                      config.heartbeat_timeout_ms,
                      heartbeat.valid);
@@ -642,7 +649,7 @@ struct UdpLink::Impl {
         outbound.uptime_ms = static_cast<std::uint32_t>(
             duration_ms(now - started_at));
         outbound.session_id = session_id;
-        if (link_ready_locked(now)) {
+        if (command_link_ready_locked(now)) {
             outbound.status_flags =
                 static_cast<std::uint16_t>(StatusFlag::LinkOk);
             outbound.state = FlightState::Ready;
@@ -943,7 +950,7 @@ struct UdpLink::Impl {
 
     bool send_rc_locked(
         const RcCommand& command, Clock::time_point now) {
-        if (!link_ready_locked(now)) {
+        if (!telemetry_link_ready_locked(now)) {
             return false;
         }
         const std::uint32_t sender_time_ms =
@@ -957,7 +964,7 @@ struct UdpLink::Impl {
     bool send_command_locked(
         const UplinkRequest& request, Clock::time_point now,
         std::string& error) {
-        if (!link_ready_locked(now)) {
+        if (!command_link_ready_locked(now)) {
             error =
                 "GS-Link uplink is disabled until FC telemetry and "
                 "heartbeat are fresh";
@@ -1092,10 +1099,9 @@ struct UdpLink::Impl {
             return false;
         }
         if (request.kind == UplinkKind::Rc) {
-            if (!link_ready_locked(now)) {
+            if (!telemetry_link_ready_locked(now)) {
                 error =
-                    "DATA_RC is blocked while FC telemetry/heartbeat "
-                    "are stale";
+                    "DATA_RC is blocked while FC telemetry is stale";
                 return false;
             }
             if (!send_rc_locked(request.rc, now)) {
@@ -1130,9 +1136,11 @@ struct UdpLink::Impl {
         result.heartbeat_fresh = fresh(
             now, last_heartbeat_rx, config.heartbeat_timeout_ms,
             heartbeat.valid);
+        // DATA_RC is high-rate and only needs fresh FC telemetry. Session
+        // commands still require a fresh heartbeat in send_command_locked().
         result.uplink_allowed =
             result.transport_connected && result.telemetry_fresh &&
-            result.heartbeat_fresh;
+            result.heartbeat.valid;
         result.last_send_errno = last_send_errno;
         result.telemetry_age_ms =
             age_ms(now, last_telemetry_rx, telemetry.valid);

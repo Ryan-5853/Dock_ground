@@ -12,27 +12,61 @@
     "rate_hz": 100.0,
     "warning_pose_age_ms": 30.0,
     "max_pose_age_ms": 50.0,
-    "deadman_timeout_ms": 250.0
+    "deadman_timeout_ms": 250.0,
+    "target_slew_rate_mps": 0.30
   },
   "position_loop": {
-    "x": {"kp": 0.60, "ki": 0.01, "kd": 0.30},
-    "y": {"kp": 0.60, "ki": 0.01, "kd": 0.30},
-    "z": {"kp": 0.06, "ki": 0.01, "kd": 0.08},
+    "x": {"kp": 1.35, "ki": 0.05, "kd": 0.60},
+    "y": {"kp": 1.50, "ki": 0.06, "kd": 0.72},
+    "z": {"kp": 0.22, "ki": 0.015, "kd": 0.10},
+    "approach": {
+      "x": {"kp": 0.80, "ki": 0.01, "kd": 1.10},
+      "y": {"kp": 0.85, "ki": 0.01, "kd": 1.20},
+      "z": {"kp": 0.14, "ki": 0.005, "kd": 0.16}
+    },
+    "precision_hold": {
+      "x": {"kp": 0.30, "ki": 0.005, "kd": 0.90},
+      "y": {"kp": 0.34, "ki": 0.005, "kd": 1.00},
+      "z": {"kp": 0.08, "ki": 0.003, "kd": 0.14}
+    },
+    "mode_scheduling": {
+      "enabled": true,
+      "brake_enter_distance_m": 0.55,
+      "brake_exit_distance_m": 0.75,
+      "brake_enter_vertical_error_m": 0.30,
+      "brake_exit_vertical_error_m": 0.40,
+      "hold_enter_distance_m": 0.12,
+      "hold_exit_distance_m": 0.22,
+      "hold_enter_vertical_error_m": 0.06,
+      "hold_exit_vertical_error_m": 0.12,
+      "hold_enter_speed_mps": 0.08,
+      "hold_exit_speed_mps": 0.15,
+      "hold_enter_vertical_speed_mps": 0.05,
+      "hold_exit_vertical_speed_mps": 0.10,
+      "target_motion_speed_mps": 0.02,
+      "hold_enter_dwell_s": 0.50,
+      "hold_exit_dwell_s": 0.20,
+      "gain_transition_time_s": 0.60
+    },
     "max_accel_mps2": 4.0,
-    "max_tilt_rad": 0.3490658504,
+    "max_tilt_rad": 0.3141592654,
     "min_throttle": 0.20,
-    "hover_throttle": 0.56,
+    "hover_throttle": 0.606,
     "max_throttle": 0.96,
-    "z_velocity_damping": 0.08,
-    "max_yaw_rate_rad_s": 1.2,
-    "yaw_rate_kp": 2.0,
+    "z_velocity_damping": 0.35,
+    "max_yaw_rate_rad_s": 0.50,
+    "yaw_rate_kp": 1.0,
+    "yaw_rate_kd": 0.50,
+    "yaw_rate_slew_rate_rad_s2": 1.5,
+    "fc_yaw_rate_scale_rad_s": 1.5,
     "max_position_error_m": 10.0,
     "gravity_mps2": 9.80665
   },
   "flight_log": {
     "enabled": true,
     "directory": "logs/flights",
-    "telemetry_stale_timeout_ms": 2000
+    "telemetry_stale_timeout_ms": 2000,
+    "pre_roll_s": 5.0
   },
   "initial_target": {
     "position_xyz_m": [0.0, 0.0, 0.0],
@@ -50,6 +84,7 @@
     "protocol": null,
     "remote_ip": "192.168.31.100",
     "remote_port": null,
+    "data_rc_rate_hz": 100.0,
     "rc_roll_channel": 1,
     "rc_pitch_channel": 2,
     "rc_throttle_channel": 3,
@@ -63,6 +98,7 @@
     "endpoint": "MCAvatar@192.168.31.221:3883",
     "sensor_id": 1,
     "position_scale": 0.001,
+    "expected_rate_hz": 120.0,
     "auto_origin": true,
     "trust_source_timestamp": false,
     "axes_from_vrpn": [

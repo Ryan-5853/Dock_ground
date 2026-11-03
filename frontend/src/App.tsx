@@ -11,6 +11,7 @@ import type {
   ControlState,
   OperatorIntent,
   PositionLoopTuning,
+  PositionRegulationMode,
   PositionTuningAck,
   PositionTuningError,
   StateMessage,
@@ -20,7 +21,12 @@ import type {
 type ConnectionState = "CONNECTING" | "ONLINE" | "OFFLINE";
 type TuningScalarKey = Exclude<
   keyof PositionLoopTuning,
-  "x" | "y" | "z"
+  | "x"
+  | "y"
+  | "z"
+  | "approach"
+  | "precision_hold"
+  | "mode_scheduling"
 >;
 
 const controlStateLabel: Record<ControlState, string> = {
@@ -28,6 +34,12 @@ const controlStateLabel: Record<ControlState, string> = {
   TRACK: "位置跟踪",
   DEGRADED: "数据降级",
   FAILSAFE: "失效保护",
+};
+
+const positionModeLabel: Record<PositionRegulationMode, string> = {
+  FAR_TRACK: "远场快速",
+  APPROACH: "接近制动",
+  PRECISION_HOLD: "近场精保",
 };
 
 function ageClass(ageMs: number | null): string {
@@ -60,6 +72,17 @@ function copyPositionTuning(
     x: { ...tuning.x },
     y: { ...tuning.y },
     z: { ...tuning.z },
+    approach: {
+      x: { ...tuning.approach.x },
+      y: { ...tuning.approach.y },
+      z: { ...tuning.approach.z },
+    },
+    precision_hold: {
+      x: { ...tuning.precision_hold.x },
+      y: { ...tuning.precision_hold.y },
+      z: { ...tuning.precision_hold.z },
+    },
+    mode_scheduling: { ...tuning.mode_scheduling },
     max_accel_mps2: tuning.max_accel_mps2,
     max_tilt_rad: tuning.max_tilt_rad,
     min_throttle: tuning.min_throttle,
@@ -68,6 +91,10 @@ function copyPositionTuning(
     z_velocity_damping: tuning.z_velocity_damping,
     max_yaw_rate_rad_s: tuning.max_yaw_rate_rad_s,
     yaw_rate_kp: tuning.yaw_rate_kp,
+    yaw_rate_kd: tuning.yaw_rate_kd,
+    yaw_rate_slew_rate_rad_s2:
+      tuning.yaw_rate_slew_rate_rad_s2,
+    fc_yaw_rate_scale_rad_s: tuning.fc_yaw_rate_scale_rad_s,
     max_position_error_m: tuning.max_position_error_m,
     gravity_mps2: tuning.gravity_mps2,
   };
@@ -463,14 +490,14 @@ export default function App() {
   const gsTelemetry = gs?.telemetry;
   const gsHasTelemetry = gsTelemetry?.valid ?? false;
   const gsFresh =
-    (gs?.telemetry_fresh ?? false) && (gs?.heartbeat_fresh ?? false);
+    (gs?.telemetry_fresh ?? false) && (gs?.uplink_allowed ?? false);
   const gsLabel = !gs?.enabled
     ? "GS-LINK OFF"
-    : gsFresh
-      ? "GS-LINK LIVE"
+    : !gsFresh
+      ? "GS-LINK WAIT"
       : gs.heartbeat_fresh
-        ? "GS-LINK RX"
-        : "GS-LINK WAIT";
+        ? "GS-LINK LIVE"
+        : "GS-LINK RC · HB WAIT";
   const groundStationActive =
     state?.control_output.ground_station_active ?? false;
   const groundStationCommanding =
@@ -482,6 +509,9 @@ export default function App() {
     state?.control_output.handoff_throttle_blend ?? 0;
   const throttleTransitioning = !handoffHold && throttleBlend < 0.999;
   const controlState = state?.control_state ?? "STANDBY";
+  const positionMode = state?.position_mode;
+  const positionModeActive =
+    controlState === "TRACK" && (positionMode?.active ?? false);
   const poseAge = state?.pose.age_ms ?? null;
   const stateTone =
     controlState === "TRACK"
@@ -510,6 +540,22 @@ export default function App() {
           </span>
           <span className={`control-state ${stateTone}`}>
             {controlStateLabel[controlState]}
+          </span>
+          <span
+            className={`simulation-badge ${
+              positionModeActive &&
+              positionMode?.mode === "PRECISION_HOLD"
+                ? "live"
+                : positionModeActive &&
+                    positionMode?.mode === "APPROACH"
+                  ? "waiting"
+                  : ""
+            }`}
+          >
+            POS ·{" "}
+            {positionModeActive && positionMode
+              ? positionModeLabel[positionMode.mode]
+              : "位置环待命"}
           </span>
           <span
             className={`simulation-badge ${
@@ -778,8 +824,22 @@ export default function App() {
           <section className="panel-section position-tuning-panel">
             <div className="section-heading">
               <span>位置环调参</span>
-              <span className="muted">增量 PID · 100 Hz</span>
+              <span className="muted">
+                三态位置调度 · XYZ 远场参数 · 100 Hz
+              </span>
             </div>
+            {positionModeActive && positionMode && (
+              <p className="tuning-axis-note">
+                当前 {positionModeLabel[positionMode.mode]} · 水平误差{" "}
+                {format(positionMode.horizontal_error_m, 3)} m · 垂直误差{" "}
+                {format(positionMode.vertical_error_m, 3)} m ·{" "}
+                vXY {format(positionMode.horizontal_speed_mps, 3)} m/s ·{" "}
+                vZ {format(positionMode.vertical_speed_mps, 3)} m/s
+                {positionMode.gain_transition_active
+                  ? " · 增益平滑切换中"
+                  : ""}
+              </p>
+            )}
             <p className="tuning-axis-note">
               世界系 X 前 / Y 左 / Z 上；机头为 +X。FC 输入为
               roll 右滚、pitch 低头、yaw rate 右偏航、上桨 throttle。
@@ -803,6 +863,14 @@ export default function App() {
                   m/s
                 </span>
               </div>
+            )}
+            {state && (
+              <p className="tuning-axis-note">
+                DATA_RC 目标 {format(state.link.target_rate_hz, 1)} Hz ·
+                实际 {format(state.link.actual_rate_hz, 1)} Hz · 最近周期{" "}
+                {format(state.link.last_send_interval_ms, 2)} ms · 抑制{" "}
+                {state.link.suppressed_sends}
+              </p>
             )}
             {state?.control_output.handoff_error && (
               <div className="binding-message error">
@@ -895,6 +963,21 @@ export default function App() {
                     />
                   </label>
                   <label>
+                    <span>偏航率阻尼</span>
+                    <input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      value={tuningDraft.yaw_rate_kd}
+                      onChange={(event) =>
+                        updateTuningScalar(
+                          "yaw_rate_kd",
+                          Number(event.target.value),
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
                     <span>最大偏航率 °/s</span>
                     <input
                       type="number"
@@ -906,6 +989,39 @@ export default function App() {
                       onChange={(event) =>
                         updateTuningScalar(
                           "max_yaw_rate_rad_s",
+                          (Number(event.target.value) * Math.PI) / 180,
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>偏航率指令斜率 rad/s²</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      value={tuningDraft.yaw_rate_slew_rate_rad_s2}
+                      onChange={(event) =>
+                        updateTuningScalar(
+                          "yaw_rate_slew_rate_rad_s2",
+                          Number(event.target.value),
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>飞控 yaw 满杆量程 °/s</span>
+                    <input
+                      type="number"
+                      step="5"
+                      min="1"
+                      value={
+                        (tuningDraft.fc_yaw_rate_scale_rad_s * 180) /
+                        Math.PI
+                      }
+                      onChange={(event) =>
+                        updateTuningScalar(
+                          "fc_yaw_rate_scale_rad_s",
                           (Number(event.target.value) * Math.PI) / 180,
                         )
                       }
@@ -992,7 +1108,7 @@ export default function App() {
                       tuningSubmitting || connection !== "ONLINE"
                     }
                   >
-                    {tuningSubmitting ? "正在应用…" : "应用增量 PID"}
+                    {tuningSubmitting ? "正在应用…" : "应用位置 PID"}
                   </button>
                 </div>
                 {tuningError && (
@@ -1038,6 +1154,17 @@ export default function App() {
                         3,
                       )}{" "}
                       Δthr
+                    </strong>
+                  </div>
+                  <div>
+                    <span>当前生效 Kp / Kd</span>
+                    <strong>
+                      X {format(state?.position_mode.active_gains.x.kp, 2)} /{" "}
+                      {format(state?.position_mode.active_gains.x.kd, 2)} · Y{" "}
+                      {format(state?.position_mode.active_gains.y.kp, 2)} /{" "}
+                      {format(state?.position_mode.active_gains.y.kd, 2)} · Z{" "}
+                      {format(state?.position_mode.active_gains.z.kp, 2)} /{" "}
+                      {format(state?.position_mode.active_gains.z.kd, 2)}
                     </strong>
                   </div>
                   <div>
@@ -1122,7 +1249,9 @@ export default function App() {
                   ? "OFF"
                   : gs.telemetry_fresh
                     ? gsFresh
-                      ? "FRESH"
+                      ? gs.heartbeat_fresh
+                        ? "FRESH"
+                        : "RC LIVE · HB STALE"
                       : "TX BLOCKED"
                     : "STALE"}
               </span>

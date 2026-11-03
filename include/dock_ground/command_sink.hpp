@@ -28,7 +28,8 @@ private:
 
 class GsLinkCommandSink final : public ICommandSink {
 public:
-    explicit GsLinkCommandSink(gs_link::UdpLink& link);
+    explicit GsLinkCommandSink(
+        gs_link::UdpLink& link, double target_rate_hz);
 
     bool send(const ManualControlSetpoint& setpoint) noexcept override;
     [[nodiscard]] LinkStatus status() const noexcept override;
@@ -39,7 +40,13 @@ private:
     std::atomic<std::uint64_t> send_errors_{0};
     std::atomic<int> last_error_code_{0};
     std::atomic<int> last_errno_{0};
+    std::chrono::steady_clock::duration send_period_{};
+    std::chrono::steady_clock::duration send_tolerance_{};
+    std::chrono::steady_clock::time_point next_send_{};
     std::chrono::steady_clock::time_point last_send_{};
+    double target_rate_hz_{0.0};
+    double smoothed_send_interval_s_{0.0};
+    std::uint64_t suppressed_sends_{0};
 };
 
 }  // namespace dock_ground

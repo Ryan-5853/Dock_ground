@@ -575,11 +575,11 @@ struct WebServer::Impl {
             destination = value->number;
             return true;
         };
-        const auto read_axis =
-            [&tuning_value](
-                std::string_view name, AxisPidGains& axis,
-                std::string& read_error) -> bool {
-            const auto* value = tuning_value->find(name);
+        const auto read_axis_from =
+            [](const json::Value* object, std::string_view name,
+               AxisPidGains& axis, std::string& read_error) -> bool {
+            const auto* value =
+                object == nullptr ? nullptr : object->find(name);
             if (value == nullptr ||
                 value->type != json::Value::Type::Object) {
                 read_error = "missing PID axis '" + std::string(name) +
@@ -603,10 +603,124 @@ struct WebServer::Impl {
             axis = {kp->number, ki->number, kd->number};
             return true;
         };
+        const auto read_axis =
+            [&tuning_value, &read_axis_from](
+                std::string_view name, AxisPidGains& axis,
+                std::string& read_error) -> bool {
+            return read_axis_from(
+                tuning_value, name, axis, read_error);
+        };
+        const auto read_profile =
+            [&tuning_value, &read_axis_from](
+                std::string_view name, PositionProfile& profile,
+                std::string& read_error) -> bool {
+            const auto* value = tuning_value->find(name);
+            if (value == nullptr ||
+                value->type != json::Value::Type::Object) {
+                read_error = "missing PID profile '" +
+                             std::string(name) + "'";
+                return false;
+            }
+            return read_axis_from(
+                       value, "x", profile.x, read_error) &&
+                   read_axis_from(
+                       value, "y", profile.y, read_error) &&
+                   read_axis_from(
+                       value, "z", profile.z, read_error);
+        };
+        const auto read_scheduling =
+            [&tuning_value](
+                PositionModeScheduling& scheduling,
+                std::string& read_error) -> bool {
+            const auto* value = tuning_value->find("mode_scheduling");
+            if (value == nullptr ||
+                value->type != json::Value::Type::Object) {
+                read_error =
+                    "missing PID mode_scheduling object";
+                return false;
+            }
+            const auto number =
+                [value](std::string_view name, double& destination) {
+                    const auto* entry = value->find(name);
+                    if (entry == nullptr ||
+                        entry->type != json::Value::Type::Number ||
+                        !std::isfinite(entry->number)) {
+                        return false;
+                    }
+                    destination = entry->number;
+                    return true;
+                };
+            const auto* enabled = value->find("enabled");
+            if (enabled == nullptr ||
+                enabled->type != json::Value::Type::Boolean) {
+                read_error =
+                    "mode_scheduling.enabled must be boolean";
+                return false;
+            }
+            scheduling.enabled = enabled->boolean;
+            if (!number(
+                    "brake_enter_distance_m",
+                    scheduling.brake_enter_distance_m) ||
+                !number(
+                    "brake_exit_distance_m",
+                    scheduling.brake_exit_distance_m) ||
+                !number(
+                    "brake_enter_vertical_error_m",
+                    scheduling.brake_enter_vertical_error_m) ||
+                !number(
+                    "brake_exit_vertical_error_m",
+                    scheduling.brake_exit_vertical_error_m) ||
+                !number(
+                    "hold_enter_distance_m",
+                    scheduling.hold_enter_distance_m) ||
+                !number(
+                    "hold_exit_distance_m",
+                    scheduling.hold_exit_distance_m) ||
+                !number(
+                    "hold_enter_vertical_error_m",
+                    scheduling.hold_enter_vertical_error_m) ||
+                !number(
+                    "hold_exit_vertical_error_m",
+                    scheduling.hold_exit_vertical_error_m) ||
+                !number(
+                    "hold_enter_speed_mps",
+                    scheduling.hold_enter_speed_mps) ||
+                !number(
+                    "hold_exit_speed_mps",
+                    scheduling.hold_exit_speed_mps) ||
+                !number(
+                    "hold_enter_vertical_speed_mps",
+                    scheduling.hold_enter_vertical_speed_mps) ||
+                !number(
+                    "hold_exit_vertical_speed_mps",
+                    scheduling.hold_exit_vertical_speed_mps) ||
+                !number(
+                    "target_motion_speed_mps",
+                    scheduling.target_motion_speed_mps) ||
+                !number(
+                    "hold_enter_dwell_s",
+                    scheduling.hold_enter_dwell_s) ||
+                !number(
+                    "hold_exit_dwell_s",
+                    scheduling.hold_exit_dwell_s) ||
+                !number(
+                    "gain_transition_time_s",
+                    scheduling.gain_transition_time_s)) {
+                read_error =
+                    "mode_scheduling contains a missing or invalid number";
+                return false;
+            }
+            return true;
+        };
 
         if (!read_axis("x", tuning.x, error) ||
             !read_axis("y", tuning.y, error) ||
             !read_axis("z", tuning.z, error) ||
+            !read_profile("approach", tuning.approach, error) ||
+            !read_profile(
+                "precision_hold", tuning.precision_hold, error) ||
+            !read_scheduling(
+                tuning.mode_scheduling, error) ||
             !read_number(
                 "max_accel_mps2", tuning.max_accel_mps2, error) ||
             !read_number(
@@ -622,6 +736,13 @@ struct WebServer::Impl {
                 "max_yaw_rate_rad_s", tuning.max_yaw_rate_rad_s,
                 error) ||
             !read_number("yaw_rate_kp", tuning.yaw_rate_kp, error) ||
+            !read_number("yaw_rate_kd", tuning.yaw_rate_kd, error) ||
+            !read_number(
+                "yaw_rate_slew_rate_rad_s2",
+                tuning.yaw_rate_slew_rate_rad_s2, error) ||
+            !read_number(
+                "fc_yaw_rate_scale_rad_s",
+                tuning.fc_yaw_rate_scale_rad_s, error) ||
             !read_number(
                 "max_position_error_m", tuning.max_position_error_m,
                 error) ||
@@ -648,6 +769,18 @@ struct WebServer::Impl {
             output << "{\"kp\":" << axis.kp << ",\"ki\":" << axis.ki
                    << ",\"kd\":" << axis.kd << '}';
         };
+        const auto append_profile =
+            [&append_axis](
+                std::ostringstream& output,
+                const PositionProfile& profile) {
+                output << "{\"x\":";
+                append_axis(output, profile.x);
+                output << ",\"y\":";
+                append_axis(output, profile.y);
+                output << ",\"z\":";
+                append_axis(output, profile.z);
+                output << '}';
+            };
         std::ostringstream response;
         response << std::setprecision(10)
                  << "{\"v\":1,\"type\":\"position_tuning_ack\","
@@ -657,6 +790,47 @@ struct WebServer::Impl {
         append_axis(response, tuning.y);
         response << ",\"z\":";
         append_axis(response, tuning.z);
+        response << ",\"approach\":";
+        append_profile(response, tuning.approach);
+        response << ",\"precision_hold\":";
+        append_profile(response, tuning.precision_hold);
+        response << ",\"mode_scheduling\":{\"enabled\":"
+                 << (tuning.mode_scheduling.enabled ? "true" : "false")
+                 << ",\"brake_enter_distance_m\":"
+                 << tuning.mode_scheduling.brake_enter_distance_m
+                 << ",\"brake_exit_distance_m\":"
+                 << tuning.mode_scheduling.brake_exit_distance_m
+                 << ",\"brake_enter_vertical_error_m\":"
+                 << tuning.mode_scheduling.brake_enter_vertical_error_m
+                 << ",\"brake_exit_vertical_error_m\":"
+                 << tuning.mode_scheduling.brake_exit_vertical_error_m
+                 << ",\"hold_enter_distance_m\":"
+                 << tuning.mode_scheduling.hold_enter_distance_m
+                 << ",\"hold_exit_distance_m\":"
+                 << tuning.mode_scheduling.hold_exit_distance_m
+                 << ",\"hold_enter_vertical_error_m\":"
+                 << tuning.mode_scheduling.hold_enter_vertical_error_m
+                 << ",\"hold_exit_vertical_error_m\":"
+                 << tuning.mode_scheduling.hold_exit_vertical_error_m
+                 << ",\"hold_enter_speed_mps\":"
+                 << tuning.mode_scheduling.hold_enter_speed_mps
+                 << ",\"hold_exit_speed_mps\":"
+                 << tuning.mode_scheduling.hold_exit_speed_mps
+                 << ",\"hold_enter_vertical_speed_mps\":"
+                 << tuning.mode_scheduling
+                        .hold_enter_vertical_speed_mps
+                 << ",\"hold_exit_vertical_speed_mps\":"
+                 << tuning.mode_scheduling
+                        .hold_exit_vertical_speed_mps
+                 << ",\"target_motion_speed_mps\":"
+                 << tuning.mode_scheduling.target_motion_speed_mps
+                 << ",\"hold_enter_dwell_s\":"
+                 << tuning.mode_scheduling.hold_enter_dwell_s
+                 << ",\"hold_exit_dwell_s\":"
+                 << tuning.mode_scheduling.hold_exit_dwell_s
+                 << ",\"gain_transition_time_s\":"
+                 << tuning.mode_scheduling.gain_transition_time_s
+                 << '}';
         response << ",\"max_accel_mps2\":" << tuning.max_accel_mps2
                  << ",\"max_tilt_rad\":" << tuning.max_tilt_rad
                  << ",\"min_throttle\":" << tuning.min_throttle
@@ -667,6 +841,11 @@ struct WebServer::Impl {
                  << ",\"max_yaw_rate_rad_s\":"
                  << tuning.max_yaw_rate_rad_s
                  << ",\"yaw_rate_kp\":" << tuning.yaw_rate_kp
+                 << ",\"yaw_rate_kd\":" << tuning.yaw_rate_kd
+                 << ",\"yaw_rate_slew_rate_rad_s2\":"
+                 << tuning.yaw_rate_slew_rate_rad_s2
+                 << ",\"fc_yaw_rate_scale_rad_s\":"
+                 << tuning.fc_yaw_rate_scale_rad_s
                  << ",\"max_position_error_m\":"
                  << tuning.max_position_error_m
                  << ",\"gravity_mps2\":" << tuning.gravity_mps2

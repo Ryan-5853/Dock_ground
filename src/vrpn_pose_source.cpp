@@ -99,9 +99,18 @@ struct VrpnPoseSource::Impl {
         while (running.load(std::memory_order_relaxed)) {
             tracker.mainloop();
             vrpn_Connection* connection = tracker.connectionPtr();
-            transport_connected.store(
-                connection != nullptr && connection->connected() != 0,
-                std::memory_order_relaxed);
+            const bool connected =
+                connection != nullptr && connection->connected() != 0;
+            if (transport_connected.exchange(
+                    connected, std::memory_order_relaxed) != connected) {
+                if (connected) {
+                    connect_count.fetch_add(
+                        1U, std::memory_order_relaxed);
+                } else {
+                    disconnect_count.fetch_add(
+                        1U, std::memory_order_relaxed);
+                }
+            }
             std::this_thread::sleep_for(1ms);
         }
     }
@@ -113,6 +122,7 @@ struct VrpnPoseSource::Impl {
 
     void on_tracker(const vrpn_TRACKERCB& report) {
         const std::uint64_t received_ns = monotonic_ns();
+        callbacks_received.fetch_add(1U, std::memory_order_relaxed);
         {
             const std::lock_guard lock(body_mutex);
             TrackerBodyInfo& body = discovered_sensors[report.sensor];
@@ -149,15 +159,22 @@ struct VrpnPoseSource::Impl {
                 active, options.endpoint.c_str());
         }
         if (preferred >= 0 && report.sensor != preferred) {
+            unselected_sensor_samples.fetch_add(
+                1U, std::memory_order_relaxed);
             return;
         }
         if (report.sensor != active) {
+            unselected_sensor_samples.fetch_add(
+                1U, std::memory_order_relaxed);
             return;
         }
 
         const Vec3 raw_position{
             report.pos[0], report.pos[1], report.pos[2]};
         if (!is_finite(raw_position)) {
+            samples_rejected.fetch_add(1U, std::memory_order_relaxed);
+            invalid_position_samples.fetch_add(
+                1U, std::memory_order_relaxed);
             return;
         }
 
@@ -177,6 +194,9 @@ struct VrpnPoseSource::Impl {
         }
         position_xyz = position_xyz - origin_;
         if (!is_finite(position_xyz)) {
+            samples_rejected.fetch_add(1U, std::memory_order_relaxed);
+            invalid_position_samples.fetch_add(
+                1U, std::memory_order_relaxed);
             return;
         }
 
@@ -192,24 +212,85 @@ struct VrpnPoseSource::Impl {
             raw_orientation.y * raw_orientation.y +
             raw_orientation.z * raw_orientation.z);
         if (!std::isfinite(quaternion_norm) || quaternion_norm < 1e-9) {
+            samples_rejected.fetch_add(1U, std::memory_order_relaxed);
+            invalid_orientation_samples.fetch_add(
+                1U, std::memory_order_relaxed);
             return;
         }
         const Quaternion orientation =
             transform_orientation(raw_orientation, options.axes_from_vrpn);
         if (!is_finite(orientation)) {
+            samples_rejected.fetch_add(1U, std::memory_order_relaxed);
+            invalid_orientation_samples.fetch_add(
+                1U, std::memory_order_relaxed);
             return;
         }
 
         PoseSample sample;
         sample.received_mono_ns = received_ns;
         sample.source_mono_ns = source_time_ns(report.msg_time);
+        sample.source_time_present = sample.source_mono_ns != 0U;
         sample.sequence = next_sequence.fetch_add(1, std::memory_order_relaxed);
+        sample.source_sensor_id = report.sensor;
         sample.position_xyz_m = position_xyz;
         sample.q_body_to_world = orientation;
-        if (options.trust_source_timestamp && sample.source_mono_ns != 0) {
-            const std::int64_t signed_age_ns =
+        sample.raw_position = raw_position;
+        sample.raw_orientation = raw_orientation;
+
+        const std::uint64_t previous_received_ns =
+            last_received_ns.load(std::memory_order_relaxed);
+        if (previous_received_ns != 0U &&
+            received_ns > previous_received_ns) {
+            sample.arrival_interval_ns =
+                received_ns - previous_received_ns;
+            const double expected_period_ns =
+                1'000'000'000.0 /
+                std::max(1.0, options.expected_rate_hz);
+            const std::uint64_t long_gap_threshold_ns =
+                static_cast<std::uint64_t>(
+                    std::max(20'000'000.0, 2.5 * expected_period_ns));
+            last_arrival_gap_ns.store(
+                sample.arrival_interval_ns,
+                std::memory_order_relaxed);
+            if (sample.arrival_interval_ns > long_gap_threshold_ns) {
+                long_gap_count.fetch_add(
+                    1U, std::memory_order_relaxed);
+            }
+            const std::uint64_t previous_max =
+                max_arrival_gap_ns.load(std::memory_order_relaxed);
+            if (sample.arrival_interval_ns > previous_max) {
+                max_arrival_gap_ns.store(
+                    sample.arrival_interval_ns,
+                    std::memory_order_relaxed);
+            }
+        }
+
+        if (sample.source_time_present) {
+            sample.source_clock_delta_ns =
                 static_cast<std::int64_t>(wall_clock_ns()) -
                 static_cast<std::int64_t>(sample.source_mono_ns);
+            const std::uint64_t previous_source_ns =
+                last_source_time_ns.load(std::memory_order_relaxed);
+            if (previous_source_ns != 0U) {
+                if (sample.source_mono_ns == previous_source_ns) {
+                    duplicate_timestamp_samples.fetch_add(
+                        1U, std::memory_order_relaxed);
+                } else if (sample.source_mono_ns < previous_source_ns) {
+                    sample.source_time_regression = true;
+                    timestamp_regression_samples.fetch_add(
+                        1U, std::memory_order_relaxed);
+                } else {
+                    sample.source_time_interval_ns =
+                        sample.source_mono_ns - previous_source_ns;
+                }
+            }
+            last_source_time_ns.store(
+                sample.source_mono_ns, std::memory_order_relaxed);
+        }
+
+        if (options.trust_source_timestamp && sample.source_time_present) {
+            const std::int64_t signed_age_ns =
+                sample.source_clock_delta_ns;
             // A timestamp is trusted only when both hosts are demonstrably in
             // the same clock domain. Large offsets fall back to receive age.
             if (signed_age_ns >= -50'000'000LL &&
@@ -260,6 +341,38 @@ struct VrpnPoseSource::Impl {
                        : static_cast<std::int32_t>(active));
         result.messages_received =
             messages_received.load(std::memory_order_relaxed);
+        result.callbacks_received =
+            callbacks_received.load(std::memory_order_relaxed);
+        result.samples_rejected =
+            samples_rejected.load(std::memory_order_relaxed);
+        result.unselected_sensor_samples =
+            unselected_sensor_samples.load(std::memory_order_relaxed);
+        result.invalid_position_samples =
+            invalid_position_samples.load(std::memory_order_relaxed);
+        result.invalid_orientation_samples =
+            invalid_orientation_samples.load(std::memory_order_relaxed);
+        result.duplicate_timestamp_samples =
+            duplicate_timestamp_samples.load(std::memory_order_relaxed);
+        result.timestamp_regression_samples =
+            timestamp_regression_samples.load(std::memory_order_relaxed);
+        result.long_gap_count =
+            long_gap_count.load(std::memory_order_relaxed);
+        result.connect_count =
+            connect_count.load(std::memory_order_relaxed);
+        result.disconnect_count =
+            disconnect_count.load(std::memory_order_relaxed);
+        result.last_received_mono_ns = last;
+        result.expected_rate_hz = options.expected_rate_hz;
+        const std::uint64_t last_gap_ns =
+            last_arrival_gap_ns.load(std::memory_order_relaxed);
+        result.last_arrival_gap_ms =
+            last_gap_ns == 0U
+                ? -1.0
+                : static_cast<double>(last_gap_ns) / 1'000'000.0;
+        result.max_arrival_gap_ms =
+            static_cast<double>(
+                max_arrival_gap_ns.load(std::memory_order_relaxed)) /
+            1'000'000.0;
         return result;
     }
 
@@ -270,6 +383,8 @@ struct VrpnPoseSource::Impl {
         preferred_sensor.store(sensor_id, std::memory_order_relaxed);
         binding_generation.fetch_add(1, std::memory_order_relaxed);
         last_received_ns.store(0, std::memory_order_relaxed);
+        last_source_time_ns.store(0, std::memory_order_relaxed);
+        last_arrival_gap_ns.store(0, std::memory_order_relaxed);
         {
             const std::lock_guard lock(mutex);
             has_sample = false;
@@ -303,6 +418,19 @@ struct VrpnPoseSource::Impl {
     std::uint64_t active_generation{0};
     std::atomic<std::uint64_t> last_received_ns{0};
     std::atomic<std::uint64_t> messages_received{0};
+    std::atomic<std::uint64_t> callbacks_received{0};
+    std::atomic<std::uint64_t> samples_rejected{0};
+    std::atomic<std::uint64_t> unselected_sensor_samples{0};
+    std::atomic<std::uint64_t> invalid_position_samples{0};
+    std::atomic<std::uint64_t> invalid_orientation_samples{0};
+    std::atomic<std::uint64_t> duplicate_timestamp_samples{0};
+    std::atomic<std::uint64_t> timestamp_regression_samples{0};
+    std::atomic<std::uint64_t> long_gap_count{0};
+    std::atomic<std::uint64_t> last_arrival_gap_ns{0};
+    std::atomic<std::uint64_t> max_arrival_gap_ns{0};
+    std::atomic<std::uint64_t> last_source_time_ns{0};
+    std::atomic<std::uint64_t> connect_count{0};
+    std::atomic<std::uint64_t> disconnect_count{0};
     std::atomic<std::uint32_t> next_sequence{1};
     std::atomic_bool transport_connected{false};
 

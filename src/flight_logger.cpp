@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <mutex>
 #include <optional>
+#include <ostream>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -70,6 +71,20 @@ constexpr double kPi = 3.14159265358979323846;
         output.push_back(safe ? character : '_');
     }
     return output.empty() ? "aircraft" : output;
+}
+
+void emit_csv_string(std::ostream& output, std::string_view value) {
+    output << '"';
+    for (const char character : value) {
+        if (character == '"') {
+            output << "\"\"";
+        } else if (character == '\r' || character == '\n') {
+            output << ' ';
+        } else {
+            output << character;
+        }
+    }
+    output << '"';
 }
 
 [[nodiscard]] bool flag_set(
@@ -137,11 +152,48 @@ const std::vector<std::string>& csv_header() {
         "max_accel_mps2", "max_tilt_deg", "min_throttle",
         "hover_throttle", "max_throttle", "z_velocity_damping",
         "max_yaw_rate_deg_s",
-        "yaw_rate_kp", "max_position_error_m", "gravity_mps2",
+        "yaw_rate_kp", "yaw_rate_kd",
+        "yaw_rate_slew_rate_rad_s2", "fc_yaw_rate_scale_rad_s",
+        "max_position_error_m", "gravity_mps2",
         "rx_packets", "tx_packets", "crc_errors", "length_errors",
         "version_errors", "sequence_gaps", "tx_retries",
         "ack_timeouts", "send_errors", "fc_state", "fc_error_code",
         "heartbeat_status_flags",
+        "position_mode", "position_mode_active",
+        "position_mode_scheduling_enabled",
+        "position_mode_transition_active",
+        "position_mode_error_xy_m", "position_mode_error_z_m",
+        "position_mode_speed_xy_mps", "position_mode_speed_z_mps",
+        "active_pid_x_kp", "active_pid_x_ki", "active_pid_x_kd",
+        "active_pid_y_kp", "active_pid_y_ki", "active_pid_y_kd",
+        "active_pid_z_kp", "active_pid_z_ki", "active_pid_z_kd",
+        "command_target_rate_hz", "command_actual_rate_hz",
+        "command_last_interval_ms", "command_suppressed_sends",
+        "pose_received_mono_ns", "pose_source_time_ns",
+        "pose_source_time_present", "pose_source_time_valid",
+        "pose_source_clock_delta_ms", "pose_source_age_ms_at_receive",
+        "pose_local_age_ms", "pose_source_age_ms", "pose_fresh",
+        "pose_arrival_interval_ms", "pose_source_interval_ms",
+        "pose_source_time_regression",
+        "pose_raw_x", "pose_raw_y", "pose_raw_z",
+        "pose_raw_q_w", "pose_raw_q_x", "pose_raw_q_y", "pose_raw_q_z",
+        "pose_source_sensor_id",
+        "vrpn_connected", "vrpn_transport_connected",
+        "vrpn_callbacks_received", "vrpn_samples_accepted",
+        "vrpn_samples_rejected", "vrpn_unselected_sensor_samples",
+        "vrpn_invalid_position_samples",
+        "vrpn_invalid_orientation_samples",
+        "vrpn_duplicate_timestamp_samples",
+        "vrpn_timestamp_regression_samples",
+        "vrpn_long_gap_count", "vrpn_last_arrival_gap_ms",
+        "vrpn_max_arrival_gap_ms", "vrpn_connect_count",
+        "vrpn_disconnect_count", "vrpn_last_received_mono_ns",
+        "vrpn_expected_rate_hz",
+        "rc_gate_ready", "handoff_reset", "handoff_reset_reason",
+        "handoff_error",
+        "loop_target_period_ms", "loop_period_ms", "loop_work_ms",
+        "loop_jitter_ms", "loop_p99_work_ms", "loop_p99_jitter_ms",
+        "loop_overruns",
     };
     return header;
 }
@@ -289,7 +341,7 @@ struct FlightLogger::Impl {
         }
         metadata << std::setprecision(12)
                  << "{\n"
-                 << "  \"schema\": 1,\n"
+                 << "  \"schema\": 2,\n"
                  << "  \"session_start_utc\": \""
                  << utc_string(sample.wall_time_ns) << "\",\n"
                  << "  \"aircraft_id\": \""
@@ -300,6 +352,39 @@ struct FlightLogger::Impl {
                  << (options.udp_flight_transport ? "GS-Link UDP"
                                                   : "loopback")
                  << "\",\n"
+                 << "  \"control\": {\"rate_hz\": "
+                 << options.control_rate_hz
+                 << ", \"warning_pose_age_ms\": "
+                 << options.warning_pose_age_ms
+                 << ", \"max_pose_age_ms\": "
+                 << options.max_pose_age_ms << "},\n"
+                 << "  \"flight_log\": {\"pre_roll_s\": "
+                 << options.pre_roll_s
+                 << ", \"telemetry_stale_timeout_ms\": "
+                 << options.telemetry_stale_timeout_ms << "},\n"
+                 << "  \"pose_source\": {\"type\": \""
+                 << json::escape(options.pose_source)
+                 << "\", \"endpoint\": \""
+                 << json::escape(options.pose_endpoint)
+                 << "\", \"sensor_id\": " << options.pose_sensor_id
+                 << ", \"position_scale\": "
+                 << options.pose_position_scale
+                 << ", \"expected_rate_hz\": "
+                 << options.pose_expected_rate_hz
+                 << ", \"auto_origin\": "
+                 << (options.pose_auto_origin ? "true" : "false")
+                 << ", \"trust_source_timestamp\": "
+                 << (options.pose_trust_source_timestamp ? "true" : "false")
+                 << ", \"axes_from_vrpn\": [["
+                 << options.pose_axes_from_vrpn[0] << ", "
+                 << options.pose_axes_from_vrpn[1] << ", "
+                 << options.pose_axes_from_vrpn[2] << "], ["
+                 << options.pose_axes_from_vrpn[3] << ", "
+                 << options.pose_axes_from_vrpn[4] << ", "
+                 << options.pose_axes_from_vrpn[5] << "], ["
+                 << options.pose_axes_from_vrpn[6] << ", "
+                 << options.pose_axes_from_vrpn[7] << ", "
+                 << options.pose_axes_from_vrpn[8] << "]]},\n"
                  << "  \"rc_mapping\": {\"roll\": "
                  << options.rc_mapping.roll << ", \"pitch\": "
                  << options.rc_mapping.pitch << ", \"throttle\": "
@@ -322,6 +407,70 @@ struct FlightLogger::Impl {
                  << "], \"z\": [" << sample.tuning.z.kp << ", "
                  << sample.tuning.z.ki << ", " << sample.tuning.z.kd
                  << "],\n"
+                 << "    \"approach\": {"
+                 << "\"x\": [" << sample.tuning.approach.x.kp << ", "
+                 << sample.tuning.approach.x.ki << ", "
+                 << sample.tuning.approach.x.kd << "], "
+                 << "\"y\": [" << sample.tuning.approach.y.kp << ", "
+                 << sample.tuning.approach.y.ki << ", "
+                 << sample.tuning.approach.y.kd << "], "
+                 << "\"z\": [" << sample.tuning.approach.z.kp << ", "
+                 << sample.tuning.approach.z.ki << ", "
+                 << sample.tuning.approach.z.kd << "]},\n"
+                 << "    \"precision_hold\": {"
+                 << "\"x\": ["
+                 << sample.tuning.precision_hold.x.kp << ", "
+                 << sample.tuning.precision_hold.x.ki << ", "
+                 << sample.tuning.precision_hold.x.kd << "], "
+                 << "\"y\": ["
+                 << sample.tuning.precision_hold.y.kp << ", "
+                 << sample.tuning.precision_hold.y.ki << ", "
+                 << sample.tuning.precision_hold.y.kd << "], "
+                 << "\"z\": ["
+                 << sample.tuning.precision_hold.z.kp << ", "
+                 << sample.tuning.precision_hold.z.ki << ", "
+                 << sample.tuning.precision_hold.z.kd << "]},\n"
+                 << "    \"mode_scheduling\": {\"enabled\": "
+                 << (sample.tuning.mode_scheduling.enabled ? "true" : "false")
+                 << ", \"brake_enter_distance_m\": "
+                 << sample.tuning.mode_scheduling.brake_enter_distance_m
+                 << ", \"brake_exit_distance_m\": "
+                 << sample.tuning.mode_scheduling.brake_exit_distance_m
+                 << ", \"brake_enter_vertical_error_m\": "
+                 << sample.tuning.mode_scheduling
+                        .brake_enter_vertical_error_m
+                 << ", \"brake_exit_vertical_error_m\": "
+                 << sample.tuning.mode_scheduling
+                        .brake_exit_vertical_error_m
+                 << ", \"hold_enter_distance_m\": "
+                 << sample.tuning.mode_scheduling.hold_enter_distance_m
+                 << ", \"hold_exit_distance_m\": "
+                 << sample.tuning.mode_scheduling.hold_exit_distance_m
+                 << ", \"hold_enter_vertical_error_m\": "
+                 << sample.tuning.mode_scheduling
+                        .hold_enter_vertical_error_m
+                 << ", \"hold_exit_vertical_error_m\": "
+                 << sample.tuning.mode_scheduling
+                        .hold_exit_vertical_error_m
+                 << ", \"hold_enter_speed_mps\": "
+                 << sample.tuning.mode_scheduling.hold_enter_speed_mps
+                 << ", \"hold_exit_speed_mps\": "
+                 << sample.tuning.mode_scheduling.hold_exit_speed_mps
+                 << ", \"hold_enter_vertical_speed_mps\": "
+                 << sample.tuning.mode_scheduling
+                        .hold_enter_vertical_speed_mps
+                 << ", \"hold_exit_vertical_speed_mps\": "
+                 << sample.tuning.mode_scheduling
+                        .hold_exit_vertical_speed_mps
+                 << ", \"target_motion_speed_mps\": "
+                 << sample.tuning.mode_scheduling.target_motion_speed_mps
+                 << ", \"hold_enter_dwell_s\": "
+                 << sample.tuning.mode_scheduling.hold_enter_dwell_s
+                 << ", \"hold_exit_dwell_s\": "
+                 << sample.tuning.mode_scheduling.hold_exit_dwell_s
+                 << ", \"gain_transition_time_s\": "
+                 << sample.tuning.mode_scheduling.gain_transition_time_s
+                 << "},\n"
                  << "    \"max_accel_mps2\": "
                  << sample.tuning.max_accel_mps2
                  << ", \"max_tilt_rad\": "
@@ -343,6 +492,7 @@ struct FlightLogger::Impl {
         session_frames = 0;
         session_start_ns = sample.mono_ns;
         last_flush_ns = sample.mono_ns;
+        reset_session_stats(sample);
         set_current_file(csv_path);
         update_status_recording(true);
         return true;
@@ -365,23 +515,230 @@ struct FlightLogger::Impl {
                     : 0.0;
             summary << std::setprecision(12)
                     << "{\n"
-                    << "  \"schema\": 1,\n"
+                    << "  \"schema\": 2,\n"
                     << "  \"end_reason\": \""
                     << json::escape(end_reason) << "\",\n"
                     << "  \"session_end_utc\": \""
                     << utc_string(end_wall_ns) << "\",\n"
                     << "  \"duration_s\": " << duration_s << ",\n"
-                    << "  \"frames\": " << session_frames << "\n"
+                    << "  \"frames\": " << session_frames << ",\n"
+                    << "  \"pose\": {\"frames\": "
+                    << session_pose_frames
+                    << ", \"unique_samples\": "
+                    << session_unique_pose_samples
+                    << ", \"hold_frames\": "
+                    << session_pose_hold_frames
+                    << ", \"stale_frames\": "
+                    << session_pose_stale_frames
+                    << ", \"max_age_ms\": " << session_max_pose_age_ms
+                    << ", \"max_arrival_interval_ms\": "
+                    << session_max_arrival_interval_ms
+                    << ", \"min_altitude_m\": "
+                    << session_min_altitude_m
+                    << ", \"max_altitude_m\": "
+                    << session_max_altitude_m << "},\n"
+                    << "  \"vrpn\": {\"callbacks\": "
+                    << source_delta(
+                           session_first_source_status.callbacks_received,
+                           session_last_source_status.callbacks_received)
+                    << ", \"accepted\": "
+                    << source_delta(
+                           session_first_source_status.messages_received,
+                           session_last_source_status.messages_received)
+                    << ", \"rejected\": "
+                    << source_delta(
+                           session_first_source_status.samples_rejected,
+                           session_last_source_status.samples_rejected)
+                    << ", \"unselected_sensor\": "
+                    << source_delta(
+                           session_first_source_status
+                               .unselected_sensor_samples,
+                           session_last_source_status
+                               .unselected_sensor_samples)
+                    << ", \"invalid_position\": "
+                    << source_delta(
+                           session_first_source_status
+                               .invalid_position_samples,
+                           session_last_source_status
+                               .invalid_position_samples)
+                    << ", \"invalid_orientation\": "
+                    << source_delta(
+                           session_first_source_status
+                               .invalid_orientation_samples,
+                           session_last_source_status
+                               .invalid_orientation_samples)
+                    << ", \"duplicate_timestamp\": "
+                    << source_delta(
+                           session_first_source_status
+                               .duplicate_timestamp_samples,
+                           session_last_source_status
+                               .duplicate_timestamp_samples)
+                    << ", \"timestamp_regression\": "
+                    << source_delta(
+                           session_first_source_status
+                               .timestamp_regression_samples,
+                           session_last_source_status
+                               .timestamp_regression_samples)
+                    << ", \"long_gaps\": "
+                    << source_delta(
+                           session_first_source_status.long_gap_count,
+                           session_last_source_status.long_gap_count)
+                    << ", \"last_max_gap_ms\": "
+                    << session_last_source_status.max_arrival_gap_ms
+                    << "},\n"
+                    << "  \"safety\": {\"handoff_resets\": "
+                    << session_handoff_reset_count
+                    << ", \"first_handoff_reset_utc\": \""
+                    << json::escape(session_first_handoff_reset_utc)
+                    << "\", \"first_handoff_reset_reason\": \""
+                    << json::escape(session_first_handoff_reset_reason)
+                    << "\", \"failsafe_frames\": "
+                    << session_failsafe_frames
+                    << ", \"first_failsafe_utc\": \""
+                    << json::escape(session_first_failsafe_utc)
+                    << "\"},\n"
+                    << "  \"control_loop\": {\"overruns\": "
+                    << session_loop_overruns
+                    << ", \"max_period_ms\": "
+                    << session_max_loop_period_ms
+                    << ", \"max_work_ms\": "
+                    << session_max_loop_work_ms
+                    << ", \"max_jitter_ms\": "
+                    << session_max_loop_jitter_ms
+                    << ", \"logger_frames_dropped\": "
+                    << source_delta(
+                           session_first_logger_drops,
+                           status_snapshot().frames_dropped)
+                    << "}\n"
                     << "}\n";
         }
         increment_sessions();
         arm_latched = false;
     }
 
+    static std::uint64_t source_delta(
+        std::uint64_t initial, std::uint64_t final) {
+        return final >= initial ? final - initial : final;
+    }
+
+    void reset_session_stats(const FlightLogSample& sample) {
+        session_pose_frames = 0;
+        session_unique_pose_samples = 0;
+        session_pose_hold_frames = 0;
+        session_pose_stale_frames = 0;
+        session_max_pose_age_ms = -1.0;
+        session_max_arrival_interval_ms = 0.0;
+        session_min_altitude_m = -1.0;
+        session_max_altitude_m = -1.0;
+        session_handoff_reset_count = 0;
+        session_failsafe_frames = 0;
+        session_loop_overruns = 0;
+        session_max_loop_period_ms = 0.0;
+        session_max_loop_work_ms = 0.0;
+        session_max_loop_jitter_ms = 0.0;
+        session_first_source_status = sample.source_status;
+        session_last_source_status = sample.source_status;
+        session_first_loop_overruns = sample.loop_metrics.overruns;
+        session_first_logger_drops =
+            status_snapshot().frames_dropped;
+        session_first_handoff_reset_utc.clear();
+        session_first_handoff_reset_reason.clear();
+        session_first_failsafe_utc.clear();
+        have_session_pose_sequence = false;
+        last_session_pose_sequence = 0;
+    }
+
+    void update_session_stats(const FlightLogSample& sample) {
+        ++session_pose_frames;
+        session_last_source_status = sample.source_status;
+        const bool derived_pose_fresh =
+            sample.pose.valid &&
+            std::isfinite(sample.pose_age_ms) &&
+            sample.pose_age_ms <= options.max_pose_age_ms;
+        if (!sample.pose_fresh && !derived_pose_fresh) {
+            ++session_pose_stale_frames;
+        }
+        if (sample.pose.valid) {
+            if (!have_session_pose_sequence ||
+                sample.pose.sequence != last_session_pose_sequence) {
+                ++session_unique_pose_samples;
+                have_session_pose_sequence = true;
+                last_session_pose_sequence = sample.pose.sequence;
+            } else {
+                ++session_pose_hold_frames;
+            }
+            session_max_pose_age_ms =
+                std::max(session_max_pose_age_ms, sample.pose_age_ms);
+            const double arrival_interval_ms =
+                static_cast<double>(sample.pose.arrival_interval_ns) /
+                1'000'000.0;
+            session_max_arrival_interval_ms =
+                std::max(
+                    session_max_arrival_interval_ms,
+                    arrival_interval_ms);
+            const double altitude = sample.pose.position_xyz_m.z;
+            session_min_altitude_m =
+                session_min_altitude_m < 0.0
+                    ? altitude
+                    : std::min(session_min_altitude_m, altitude);
+            session_max_altitude_m =
+                session_max_altitude_m < 0.0
+                    ? altitude
+                    : std::max(session_max_altitude_m, altitude);
+        }
+        if (sample.handoff_reset) {
+            ++session_handoff_reset_count;
+            if (session_first_handoff_reset_utc.empty()) {
+                session_first_handoff_reset_utc =
+                    utc_string(sample.wall_time_ns);
+                session_first_handoff_reset_reason =
+                    sample.handoff_reset_reason;
+            }
+        }
+        if (flag_set(
+                sample.telemetry.status_flags,
+                gs_link::StatusFlag::Failsafe)) {
+            ++session_failsafe_frames;
+            if (session_first_failsafe_utc.empty()) {
+                session_first_failsafe_utc =
+                    utc_string(sample.wall_time_ns);
+            }
+        }
+        session_loop_overruns = source_delta(
+            session_first_loop_overruns,
+            sample.loop_metrics.overruns);
+        session_max_loop_period_ms =
+            std::max(
+                session_max_loop_period_ms,
+                sample.loop_metrics.last_period_ms);
+        session_max_loop_work_ms =
+            std::max(
+                session_max_loop_work_ms,
+                sample.loop_metrics.work_ms);
+        session_max_loop_jitter_ms =
+            std::max(
+                session_max_loop_jitter_ms,
+                sample.loop_metrics.jitter_ms);
+    }
+
+    void buffer_pre_arm(const FlightLogSample& sample) {
+        pre_arm_buffer.push_back(sample);
+        const std::uint64_t pre_roll_ns =
+            static_cast<std::uint64_t>(
+                std::max(0.0, options.pre_roll_s) * 1'000'000'000.0);
+        while (pre_arm_buffer.size() > 1U &&
+               sample.mono_ns >= pre_arm_buffer.front().mono_ns &&
+               sample.mono_ns - pre_arm_buffer.front().mono_ns >
+                   pre_roll_ns) {
+            pre_arm_buffer.pop_front();
+        }
+    }
+
     void write_row(const FlightLogSample& sample) {
         if (!stream.is_open()) {
             return;
         }
+        update_session_stats(sample);
         const bool armed_known =
             sample.telemetry.valid && sample.telemetry_fresh;
         const bool armed =
@@ -407,10 +764,10 @@ struct FlightLogger::Impl {
             emit_double(q.z);
         };
 
-        stream << "1," << utc_string(sample.wall_time_ns) << ','
-               << sample.mono_ns << ','
-               << json::escape(options.aircraft_id) << ','
-               << to_string(sample.control_state) << ','
+        stream << "2," << utc_string(sample.wall_time_ns) << ','
+               << sample.mono_ns << ',';
+        emit_csv_string(stream, options.aircraft_id);
+        stream << ',' << to_string(sample.control_state) << ','
                << control_source(options, sample) << ','
                << sample.telemetry_fresh << ','
                << sample.heartbeat_fresh << ','
@@ -421,9 +778,9 @@ struct FlightLogger::Impl {
         emit_double(sample.heartbeat_age_ms);
         stream << ',' << sample.command_link.connected << ','
                << sample.command_link.commands_sent << ','
-               << sample.command_link.send_errors << ','
-               << json::escape(sample.command_link.last_error) << ','
-               << sample.command_link.last_errno << ','
+               << sample.command_link.send_errors << ',';
+        emit_csv_string(stream, sample.command_link.last_error);
+        stream << ',' << sample.command_link.last_errno << ','
                << armed_known << ',' << armed << ','
                << flag_set(flags, gs_link::StatusFlag::GsModeActive)
                << ','
@@ -550,6 +907,12 @@ struct FlightLogger::Impl {
         stream << ',';
         emit_double(sample.tuning.yaw_rate_kp);
         stream << ',';
+        emit_double(sample.tuning.yaw_rate_kd);
+        stream << ',';
+        emit_double(sample.tuning.yaw_rate_slew_rate_rad_s2);
+        stream << ',';
+        emit_double(sample.tuning.fc_yaw_rate_scale_rad_s);
+        stream << ',';
         emit_double(sample.tuning.max_position_error_m);
         stream << ',';
         emit_double(sample.tuning.gravity_mps2);
@@ -566,7 +929,114 @@ struct FlightLogger::Impl {
                           sample.heartbeat.state)
                << ',' << static_cast<unsigned int>(
                           sample.heartbeat.error_code)
-               << ',' << sample.heartbeat.status_flags << '\n';
+               << ',' << sample.heartbeat.status_flags
+               << ',' << to_string(sample.regulation.mode)
+               << ','
+               << sample.regulation.active
+               << ','
+               << sample.regulation.scheduling_enabled
+               << ','
+               << sample.regulation.gain_transition_active << ',';
+        emit_double(sample.regulation.horizontal_error_m);
+        stream << ',';
+        emit_double(sample.regulation.vertical_error_m);
+        stream << ',';
+        emit_double(sample.regulation.horizontal_speed_mps);
+        stream << ',';
+        emit_double(sample.regulation.vertical_speed_mps);
+        stream << ',';
+        emit_double(sample.regulation.active_x.kp);
+        stream << ',';
+        emit_double(sample.regulation.active_x.ki);
+        stream << ',';
+        emit_double(sample.regulation.active_x.kd);
+        stream << ',';
+        emit_double(sample.regulation.active_y.kp);
+        stream << ',';
+        emit_double(sample.regulation.active_y.ki);
+        stream << ',';
+        emit_double(sample.regulation.active_y.kd);
+        stream << ',';
+        emit_double(sample.regulation.active_z.kp);
+        stream << ',';
+        emit_double(sample.regulation.active_z.ki);
+        stream << ',';
+        emit_double(sample.regulation.active_z.kd);
+        stream << ',';
+        emit_double(sample.command_link.target_rate_hz);
+        stream << ',';
+        emit_double(sample.command_link.actual_rate_hz);
+        stream << ',';
+        emit_double(sample.command_link.last_send_interval_ms);
+        stream << ',' << sample.command_link.suppressed_sends << ','
+               << sample.pose.received_mono_ns << ','
+               << sample.pose.source_mono_ns << ','
+               << sample.pose.source_time_present << ','
+               << sample.pose.source_time_valid << ',';
+        emit_double(
+            static_cast<double>(sample.pose.source_clock_delta_ns) /
+            1'000'000.0);
+        stream << ',';
+        emit_double(
+            static_cast<double>(sample.pose.source_age_at_receive_ns) /
+            1'000'000.0);
+        stream << ',';
+        emit_double(sample.pose_local_age_ms);
+        stream << ',';
+        emit_double(sample.pose_source_age_ms);
+        stream << ',' << sample.pose_fresh << ',';
+        emit_double(
+            static_cast<double>(sample.pose.arrival_interval_ns) /
+            1'000'000.0);
+        stream << ',';
+        emit_double(
+            static_cast<double>(sample.pose.source_time_interval_ns) /
+            1'000'000.0);
+        stream << ',' << sample.pose.source_time_regression << ',';
+        emit_double(sample.pose.raw_position.x);
+        stream << ',';
+        emit_double(sample.pose.raw_position.y);
+        stream << ',';
+        emit_double(sample.pose.raw_position.z);
+        stream << ',';
+        emit_q(sample.pose.raw_orientation);
+        stream << ',' << sample.pose.source_sensor_id << ','
+               << sample.source_status.connected << ','
+               << sample.source_status.transport_connected << ','
+               << sample.source_status.callbacks_received << ','
+               << sample.source_status.messages_received << ','
+               << sample.source_status.samples_rejected << ','
+               << sample.source_status.unselected_sensor_samples << ','
+               << sample.source_status.invalid_position_samples << ','
+               << sample.source_status.invalid_orientation_samples << ','
+               << sample.source_status.duplicate_timestamp_samples << ','
+               << sample.source_status.timestamp_regression_samples << ','
+               << sample.source_status.long_gap_count << ',';
+        emit_double(sample.source_status.last_arrival_gap_ms);
+        stream << ',';
+        emit_double(sample.source_status.max_arrival_gap_ms);
+        stream << ',' << sample.source_status.connect_count << ','
+               << sample.source_status.disconnect_count << ','
+               << sample.source_status.last_received_mono_ns << ',';
+        emit_double(sample.source_status.expected_rate_hz);
+        stream << ',' << sample.rc_gate_ready << ','
+               << sample.handoff_reset << ',';
+        emit_csv_string(stream, sample.handoff_reset_reason);
+        stream << ',';
+        emit_csv_string(stream, sample.handoff_error);
+        stream << ',';
+        emit_double(sample.loop_metrics.target_period_ms);
+        stream << ',';
+        emit_double(sample.loop_metrics.last_period_ms);
+        stream << ',';
+        emit_double(sample.loop_metrics.work_ms);
+        stream << ',';
+        emit_double(sample.loop_metrics.jitter_ms);
+        stream << ',';
+        emit_double(sample.loop_metrics.p99_work_ms);
+        stream << ',';
+        emit_double(sample.loop_metrics.p99_jitter_ms);
+        stream << ',' << sample.loop_metrics.overruns << '\n';
         if (!stream) {
             set_error("flight log write failed: " + csv_path.string());
             close_session("write_error", sample.mono_ns, sample.wall_time_ns);
@@ -615,20 +1085,33 @@ struct FlightLogger::Impl {
             previous_pose = sample.pose;
         }
 
+        bool row_written = false;
         if (!session_open) {
             if (armed_known && !armed) {
                 arm_latched = false;
             }
+            buffer_pre_arm(sample);
             if (!arm_latched && armed_known && armed) {
                 arm_latched = true;
-                session_open = open_session(sample);
+                const FlightLogSample& first =
+                    pre_arm_buffer.empty() ? sample : pre_arm_buffer.front();
+                session_open = open_session(first);
+                while (session_open && !pre_arm_buffer.empty()) {
+                    FlightLogSample buffered =
+                        std::move(pre_arm_buffer.front());
+                    pre_arm_buffer.pop_front();
+                    write_row(buffered);
+                }
+                row_written = session_open;
             }
             if (!session_open) {
                 return;
             }
         }
 
-        write_row(sample);
+        if (!row_written) {
+            write_row(sample);
+        }
         if (!session_open) {
             return;
         }
@@ -695,6 +1178,7 @@ struct FlightLogger::Impl {
     mutable std::mutex queue_mutex;
     std::condition_variable queue_cv;
     std::deque<FlightLogSample> queue;
+    std::deque<FlightLogSample> pre_arm_buffer;
 
     mutable std::mutex status_mutex;
     FlightLogStatus status;
@@ -712,6 +1196,29 @@ struct FlightLogger::Impl {
     std::uint64_t last_armed_state_known_ns{0};
     std::optional<PoseSample> previous_pose;
     Vec3 estimated_velocity{};
+    std::uint64_t session_pose_frames{0};
+    std::uint64_t session_unique_pose_samples{0};
+    std::uint64_t session_pose_hold_frames{0};
+    std::uint64_t session_pose_stale_frames{0};
+    double session_max_pose_age_ms{-1.0};
+    double session_max_arrival_interval_ms{0.0};
+    double session_min_altitude_m{-1.0};
+    double session_max_altitude_m{-1.0};
+    std::uint64_t session_handoff_reset_count{0};
+    std::uint64_t session_failsafe_frames{0};
+    std::uint64_t session_loop_overruns{0};
+    std::uint64_t session_first_loop_overruns{0};
+    std::uint64_t session_first_logger_drops{0};
+    double session_max_loop_period_ms{0.0};
+    double session_max_loop_work_ms{0.0};
+    double session_max_loop_jitter_ms{0.0};
+    PoseSourceStatus session_first_source_status{};
+    PoseSourceStatus session_last_source_status{};
+    std::string session_first_handoff_reset_utc{};
+    std::string session_first_handoff_reset_reason{};
+    std::string session_first_failsafe_utc{};
+    bool have_session_pose_sequence{false};
+    std::uint32_t last_session_pose_sequence{0};
 };
 
 FlightLogger::FlightLogger(FlightLoggerOptions options)

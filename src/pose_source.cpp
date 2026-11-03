@@ -52,12 +52,17 @@ std::optional<PoseSample> SimulatedPoseSource::latest() const {
 
 PoseSourceStatus SimulatedPoseSource::status() const {
     PoseSourceStatus result;
-    result.connected = messages_received_.load(std::memory_order_relaxed) > 0;
+    const std::uint64_t messages =
+        messages_received_.load(std::memory_order_relaxed);
+    result.connected = messages > 0;
     result.transport_connected = true;
     result.name = "simulated";
     result.sensor_id = 0;
-    result.messages_received =
-        messages_received_.load(std::memory_order_relaxed);
+    result.messages_received = messages;
+    result.callbacks_received = messages;
+    result.last_received_mono_ns =
+        last_received_ns_.load(std::memory_order_relaxed);
+    result.expected_rate_hz = rate_hz_;
     return result;
 }
 
@@ -86,14 +91,22 @@ PoseSample SimulatedPoseSource::sample(std::uint64_t elapsed_ns) {
     const double y = 0.35 * std::sin(0.31 * time_s + 0.6);
     const double z = 1.5 + 0.08 * std::sin(0.7 * time_s);
     const double yaw = 0.18 * std::sin(0.22 * time_s);
+    const Quaternion orientation{
+        std::cos(yaw * 0.5), 0.0, 0.0, std::sin(yaw * 0.5)};
 
     PoseSample result;
     result.received_mono_ns = monotonic_ns();
     result.source_mono_ns = result.received_mono_ns;
+    result.arrival_interval_ns = static_cast<std::uint64_t>(
+        1'000'000'000.0 / rate_hz_);
+    result.source_time_interval_ns = result.arrival_interval_ns;
     result.sequence = next_sequence_++;
+    result.source_sensor_id = 0;
     result.position_xyz_m = {x, y, z};
-    result.q_body_to_world = {
-        std::cos(yaw * 0.5), 0.0, 0.0, std::sin(yaw * 0.5)};
+    result.q_body_to_world = orientation;
+    result.raw_position = result.position_xyz_m;
+    result.raw_orientation = orientation;
+    result.source_time_present = true;
     result.source_time_valid = true;
     result.valid = true;
     return result;

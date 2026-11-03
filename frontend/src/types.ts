@@ -4,16 +4,50 @@ export type ControlState =
   | "DEGRADED"
   | "FAILSAFE";
 
+export type PositionRegulationMode =
+  | "FAR_TRACK"
+  | "APPROACH"
+  | "PRECISION_HOLD";
+
 export interface AxisPidGains {
   kp: number;
   ki: number;
   kd: number;
 }
 
+export interface PositionProfile {
+  x: AxisPidGains;
+  y: AxisPidGains;
+  z: AxisPidGains;
+}
+
+export interface PositionModeScheduling {
+  enabled: boolean;
+  brake_enter_distance_m: number;
+  brake_exit_distance_m: number;
+  brake_enter_vertical_error_m: number;
+  brake_exit_vertical_error_m: number;
+  hold_enter_distance_m: number;
+  hold_exit_distance_m: number;
+  hold_enter_vertical_error_m: number;
+  hold_exit_vertical_error_m: number;
+  hold_enter_speed_mps: number;
+  hold_exit_speed_mps: number;
+  hold_enter_vertical_speed_mps: number;
+  hold_exit_vertical_speed_mps: number;
+  target_motion_speed_mps: number;
+  hold_enter_dwell_s: number;
+  hold_exit_dwell_s: number;
+  gain_transition_time_s: number;
+}
+
 export interface PositionLoopTuning {
   x: AxisPidGains;
   y: AxisPidGains;
   z: AxisPidGains;
+  approach: PositionProfile;
+  precision_hold: PositionProfile;
+  mode_scheduling: PositionModeScheduling;
   max_accel_mps2: number;
   max_tilt_rad: number;
   min_throttle: number;
@@ -22,6 +56,9 @@ export interface PositionLoopTuning {
   z_velocity_damping: number;
   max_yaw_rate_rad_s: number;
   yaw_rate_kp: number;
+  yaw_rate_kd: number;
+  yaw_rate_slew_rate_rad_s2: number;
+  fc_yaw_rate_scale_rad_s: number;
   max_position_error_m: number;
   gravity_mps2: number;
 }
@@ -45,8 +82,23 @@ export interface StateMessage {
     trust_source_timestamp: boolean;
   };
   position_tuning: PositionLoopTuning & {
-    mode: "incremental_pid";
+    mode: "position_pid";
     frame: string;
+  };
+  position_mode: {
+    mode: PositionRegulationMode;
+    active: boolean;
+    scheduling_enabled: boolean;
+    gain_transition_active: boolean;
+    horizontal_error_m: number;
+    vertical_error_m: number;
+    horizontal_speed_mps: number;
+    vertical_speed_mps: number;
+    active_gains: {
+      x: AxisPidGains;
+      y: AxisPidGains;
+      z: AxisPidGains;
+    };
   };
   rc_mapping: {
     roll: number;
@@ -212,6 +264,10 @@ export interface StateMessage {
     connected: boolean;
     commands_sent: number;
     send_errors: number;
+    suppressed_sends: number;
+    target_rate_hz: number;
+    actual_rate_hz: number;
+    last_send_interval_ms: number;
   };
   metrics: {
     target_period_ms: number;

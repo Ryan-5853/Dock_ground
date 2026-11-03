@@ -1,6 +1,6 @@
 # 系统架构与低延迟技术路线
 
-状态：真实 VRPN、GS-Link UDP、三轴增量 PID 和四通道输出已接入  
+状态：真实 VRPN、GS-Link UDP、三轴位置 PID、速度阻尼和四通道输出已接入
 适用范围：单飞行器、单动捕刚体、局域网测试飞行  
 最后更新：2026-10-21
 
@@ -15,7 +15,7 @@
 - 接收 VRPN 刚体位姿并完成坐标变换、时间检查和有效性检查。
 - 由 C++ 后端执行固定 100 Hz 的位置闭环。
 - 通过 ESP32-C5 透明链路发送 GS-Link v1 `DATA_RC` 四通道。
-- 为 X/Y/Z 分别提供增量 PID 参数和 WebUI 热更新。
+- 为 X/Y/Z 分别提供位置 PID 参数和 WebUI 热更新。
 - WebUI 三维显示机体、目标、轨迹、坐标轴、地理围栏和链路状态。
 - 支持位置目标、速度摇杆、偏航目标、hold 和受保护的模式/解锁操作。
 - 记录逐级时延、样本龄期、丢包、乱序、控制周期抖动和失效事件。
@@ -64,7 +64,7 @@
 vrpn_source       位姿接收、时间戳检查、有效性检查、坐标变换
 latest_pose       单生产者/单消费者覆盖式共享，只保存最新有效位姿
 operator_target   浏览器操作意图、deadman、目标限幅与状态机
-position_loop     100 Hz 三轴增量 PID、姿态/油门转换、样本龄期门控
+position_loop     100 Hz 三轴位置 PID、速度阻尼、姿态/油门转换、样本龄期门控
 flight_codec      GS-Link v1 帧、CRC、遥测、ACK 与四通道编码
 flight_transport  C5 UDP socket、序号、心跳、接收/回显、链路统计
 link_supervisor   健康状态、过期策略、故障状态机

@@ -115,6 +115,7 @@ void append_quaternion(
                 .endpoint = config.vrpn_endpoint,
                 .sensor_id = config.vrpn_sensor_id,
                 .position_scale = config.vrpn_position_scale,
+                .expected_rate_hz = config.vrpn_expected_rate_hz,
                 .auto_origin = config.vrpn_auto_origin,
                 .trust_source_timestamp = config.vrpn_trust_source_timestamp,
                 .axes_from_vrpn = config.vrpn_axes_from_vrpn,
@@ -150,7 +151,8 @@ void append_quaternion(
 [[nodiscard]] std::unique_ptr<ICommandSink> make_command_sink(
     const AppConfig& config, gs_link::UdpLink* link) {
     if (config.flight_transport == "udp" && link != nullptr) {
-        return std::make_unique<GsLinkCommandSink>(*link);
+        return std::make_unique<GsLinkCommandSink>(
+            *link, config.data_rc_rate_hz);
     }
     return std::make_unique<LoopbackCommandSink>();
 }
@@ -168,6 +170,36 @@ void append_quaternion(
                 config.flight_log_stale_timeout_ms,
             .udp_flight_transport =
                 config.flight_transport == "udp",
+            .pre_roll_s = config.flight_log_pre_roll_s,
+            .control_rate_hz = config.control_rate_hz,
+            .warning_pose_age_ms = config.warning_pose_age_ms,
+            .max_pose_age_ms = config.max_pose_age_ms,
+            .pose_source = config.pose_source,
+            .pose_endpoint =
+                config.pose_source == "vrpn" ? config.vrpn_endpoint : "",
+            .pose_sensor_id =
+                config.pose_source == "vrpn" ? config.vrpn_sensor_id : 0,
+            .pose_position_scale =
+                config.pose_source == "vrpn"
+                    ? config.vrpn_position_scale
+                    : 1.0,
+            .pose_expected_rate_hz =
+                config.pose_source == "vrpn"
+                    ? config.vrpn_expected_rate_hz
+                    : config.simulated_pose_rate_hz,
+            .pose_auto_origin =
+                config.pose_source == "vrpn" && config.vrpn_auto_origin,
+            .pose_trust_source_timestamp =
+                config.pose_source == "vrpn" &&
+                config.vrpn_trust_source_timestamp,
+            .pose_axes_from_vrpn =
+                config.pose_source == "vrpn"
+                    ? config.vrpn_axes_from_vrpn
+                    : Mat3{
+                          1.0, 0.0, 0.0,
+                          0.0, 1.0, 0.0,
+                          0.0, 0.0, 1.0,
+                      },
         });
 }
 
@@ -240,6 +272,16 @@ void append_quaternion(
     base.valid = true;
     error.clear();
     return base;
+}
+
+[[nodiscard]] Vec3 slew_position_toward(
+    const Vec3& current, const Vec3& requested, double maximum_step) {
+    const Vec3 delta = requested - current;
+    const double distance = norm(delta);
+    if (distance <= maximum_step || distance < 1e-12) {
+        return requested;
+    }
+    return current + delta * (maximum_step / distance);
 }
 
 }  // namespace
@@ -426,15 +468,21 @@ struct Runtime::Impl {
         std::uint64_t rc_handoff_until_ns = 0;
         ManualControlSetpoint rc_handoff_base{};
         std::string rc_handoff_error;
+        bool handoff_reset = false;
+        std::string handoff_reset_reason;
         OperatorTarget local_target;
+        OperatorTarget slew_target;
         {
             const std::lock_guard lock(target_mutex);
             local_target = target;
+            slew_target = target;
         }
 
         while (running_.load(std::memory_order_relaxed)) {
             deadline += period;
             std::this_thread::sleep_until(deadline);
+            handoff_reset = false;
+            handoff_reset_reason.clear();
 
             const auto cycle_start = SteadyClock::now();
             const double period_ms =
@@ -454,6 +502,8 @@ struct Runtime::Impl {
                 handoff_velocity_samples = 0;
                 rc_handoff_throttle_blend = 0.0;
                 rc_handoff_throttle_command = 0.0;
+                handoff_reset = true;
+                handoff_reset_reason = "pose_binding_changed";
             }
 
             if (operator_target_received.load(std::memory_order_relaxed)) {
@@ -494,10 +544,26 @@ struct Runtime::Impl {
                 local_target.yaw_rad =
                     yaw_from_quaternion(last_pose.q_body_to_world);
                 local_target.updated_mono_ns = now_ns;
+                slew_target = local_target;
                 initial_target_applied = true;
             }
 
-            OperatorTarget cycle_target = local_target;
+            OperatorTarget cycle_target = slew_target;
+            cycle_target.deadman = local_target.deadman;
+            cycle_target.yaw_rad = local_target.yaw_rad;
+            cycle_target.updated_mono_ns = local_target.updated_mono_ns;
+            cycle_target.client_sequence = local_target.client_sequence;
+            const double target_dt_s =
+                clamp(period_ms / 1'000.0, 0.001, 0.05);
+            const Vec3 previous_slew_position =
+                slew_target.position_xyz_m;
+            slew_target.position_xyz_m = slew_position_toward(
+                slew_target.position_xyz_m, local_target.position_xyz_m,
+                config.target_slew_rate_mps * target_dt_s);
+            cycle_target.position_xyz_m = slew_target.position_xyz_m;
+            cycle_target.target_velocity_xyz_mps =
+                (slew_target.position_xyz_m - previous_slew_position) /
+                target_dt_s;
             if (cycle_target.deadman &&
                 now_ns > cycle_target.updated_mono_ns &&
                 static_cast<double>(now_ns - cycle_target.updated_mono_ns) /
@@ -535,6 +601,16 @@ struct Runtime::Impl {
                 rc_handoff_gate_ready(current_gs_status);
             if (!cycle_target.deadman || !pose_fresh ||
                 (gs_transport_enabled && !rc_gate_ready)) {
+                if (!handoff_reset) {
+                    handoff_reset = true;
+                    if (!cycle_target.deadman) {
+                        handoff_reset_reason = "deadman_inactive";
+                    } else if (!pose_fresh) {
+                        handoff_reset_reason = "pose_stale";
+                    } else {
+                        handoff_reset_reason = "rc_gate_not_ready";
+                    }
+                }
                 controller.reset();
                 rc_passthrough_active = false;
                 rc_handoff_active = false;
@@ -560,6 +636,8 @@ struct Runtime::Impl {
                             gs_link::StatusFlag::GsModeActive);
                     if (!fc_gs_confirmed) {
                         if (rc_handoff_active) {
+                            handoff_reset = true;
+                            handoff_reset_reason = "fc_gs_mode_lost";
                             controller.reset();
                         }
                         rc_passthrough_active = false;
@@ -694,6 +772,10 @@ struct Runtime::Impl {
                             outgoing_command =
                                 controller_output.manual;
                             have_outgoing_command = true;
+                        } else {
+                            handoff_reset = true;
+                            handoff_reset_reason =
+                                "controller_output_invalid";
                         }
                     }
                 } else {
@@ -793,6 +875,7 @@ struct Runtime::Impl {
             next.rc_handoff_throttle_blend =
                 rc_handoff_throttle_blend;
             next.rc_handoff_error = rc_handoff_error;
+            next.position_mode = controller_output.regulation;
             next.deadman_active = cycle_target.deadman;
             next.metrics.target_period_ms = target_period_ms;
             next.metrics.last_period_ms = period_ms;
@@ -814,12 +897,17 @@ struct Runtime::Impl {
             log_sample.pose = next.pose;
             log_sample.target = next.target;
             log_sample.tuning = next.position_tuning;
+            log_sample.regulation = next.position_mode;
             log_sample.command = next.command;
             log_sample.rc_base = next.rc_handoff_base;
             log_sample.telemetry = next.gs_link.telemetry;
             log_sample.heartbeat = next.gs_link.heartbeat;
             log_sample.counters = next.gs_link.counters;
+            log_sample.source_status = next.source_status;
+            log_sample.loop_metrics = next.metrics;
             log_sample.pose_age_ms = next.pose_age_ms;
+            log_sample.pose_local_age_ms = local_pose_age_ms;
+            log_sample.pose_source_age_ms = source_pose_age_ms;
             log_sample.telemetry_fresh =
                 next.gs_link.telemetry_fresh;
             log_sample.heartbeat_fresh =
@@ -843,6 +931,11 @@ struct Runtime::Impl {
                 next.handoff_vertical_speed_mps;
             log_sample.handoff_throttle_blend =
                 next.rc_handoff_throttle_blend;
+            log_sample.pose_fresh = pose_fresh;
+            log_sample.rc_gate_ready = rc_gate_ready;
+            log_sample.handoff_reset = handoff_reset;
+            log_sample.handoff_reset_reason = handoff_reset_reason;
+            log_sample.handoff_error = rc_handoff_error;
             flight_logger->observe(log_sample);
         }
         controller.reset();
@@ -1003,6 +1096,35 @@ std::string Runtime::snapshot_json() const {
            << ",\"sensor_id\":" << state.source_status.sensor_id
            << ",\"messages_received\":"
            << state.source_status.messages_received
+           << ",\"callbacks_received\":"
+           << state.source_status.callbacks_received
+           << ",\"samples_rejected\":"
+           << state.source_status.samples_rejected
+           << ",\"unselected_sensor_samples\":"
+           << state.source_status.unselected_sensor_samples
+           << ",\"invalid_position_samples\":"
+           << state.source_status.invalid_position_samples
+           << ",\"invalid_orientation_samples\":"
+           << state.source_status.invalid_orientation_samples
+           << ",\"duplicate_timestamp_samples\":"
+           << state.source_status.duplicate_timestamp_samples
+           << ",\"timestamp_regression_samples\":"
+           << state.source_status.timestamp_regression_samples
+           << ",\"long_gap_count\":"
+           << state.source_status.long_gap_count
+           << ",\"connect_count\":"
+           << state.source_status.connect_count
+           << ",\"disconnect_count\":"
+           << state.source_status.disconnect_count
+           << ",\"last_received_mono_ns\":"
+           << state.source_status.last_received_mono_ns
+           << ",\"expected_rate_hz\":";
+    append_number(output, state.source_status.expected_rate_hz);
+    output << ",\"last_arrival_gap_ms\":";
+    append_number(output, state.source_status.last_arrival_gap_ms);
+    output << ",\"max_arrival_gap_ms\":";
+    append_number(output, state.source_status.max_arrival_gap_ms);
+    output
            << ",\"endpoint\":\"" << json::escape(impl_->config.vrpn_endpoint)
            << "\",\"position_scale\":" << impl_->config.vrpn_position_scale
            << ",\"auto_origin\":"
@@ -1022,7 +1144,17 @@ std::string Runtime::snapshot_json() const {
         append_number(output, axis.kd);
         output << '}';
     };
-    output << ",\"position_tuning\":{\"mode\":\"incremental_pid\""
+    const auto append_profile = [&output, &append_axis](
+                                    const PositionProfile& profile) {
+        output << "{\"x\":";
+        append_axis(profile.x);
+        output << ",\"y\":";
+        append_axis(profile.y);
+        output << ",\"z\":";
+        append_axis(profile.z);
+        output << '}';
+    };
+    output << ",\"position_tuning\":{\"mode\":\"position_pid\""
            << ",\"frame\":\"world_xyz_x_forward_y_left_z_up\""
            << ",\"x\":";
     append_axis(tuning.x);
@@ -1030,6 +1162,66 @@ std::string Runtime::snapshot_json() const {
     append_axis(tuning.y);
     output << ",\"z\":";
     append_axis(tuning.z);
+    output << ",\"approach\":";
+    append_profile(tuning.approach);
+    output << ",\"precision_hold\":";
+    append_profile(tuning.precision_hold);
+    output << ",\"mode_scheduling\":{\"enabled\":"
+           << (tuning.mode_scheduling.enabled ? "true" : "false")
+           << ",\"brake_enter_distance_m\":";
+    append_number(
+        output, tuning.mode_scheduling.brake_enter_distance_m);
+    output << ",\"brake_exit_distance_m\":";
+    append_number(
+        output, tuning.mode_scheduling.brake_exit_distance_m);
+    output << ",\"brake_enter_vertical_error_m\":";
+    append_number(
+        output,
+        tuning.mode_scheduling.brake_enter_vertical_error_m);
+    output << ",\"brake_exit_vertical_error_m\":";
+    append_number(
+        output,
+        tuning.mode_scheduling.brake_exit_vertical_error_m);
+    output << ",\"hold_enter_distance_m\":";
+    append_number(
+        output, tuning.mode_scheduling.hold_enter_distance_m);
+    output << ",\"hold_exit_distance_m\":";
+    append_number(
+        output, tuning.mode_scheduling.hold_exit_distance_m);
+    output << ",\"hold_enter_vertical_error_m\":";
+    append_number(
+        output,
+        tuning.mode_scheduling.hold_enter_vertical_error_m);
+    output << ",\"hold_exit_vertical_error_m\":";
+    append_number(
+        output, tuning.mode_scheduling.hold_exit_vertical_error_m);
+    output << ",\"hold_enter_speed_mps\":";
+    append_number(
+        output, tuning.mode_scheduling.hold_enter_speed_mps);
+    output << ",\"hold_exit_speed_mps\":";
+    append_number(
+        output, tuning.mode_scheduling.hold_exit_speed_mps);
+    output << ",\"hold_enter_vertical_speed_mps\":";
+    append_number(
+        output,
+        tuning.mode_scheduling.hold_enter_vertical_speed_mps);
+    output << ",\"hold_exit_vertical_speed_mps\":";
+    append_number(
+        output,
+        tuning.mode_scheduling.hold_exit_vertical_speed_mps);
+    output << ",\"target_motion_speed_mps\":";
+    append_number(
+        output, tuning.mode_scheduling.target_motion_speed_mps);
+    output << ",\"hold_enter_dwell_s\":";
+    append_number(
+        output, tuning.mode_scheduling.hold_enter_dwell_s);
+    output << ",\"hold_exit_dwell_s\":";
+    append_number(
+        output, tuning.mode_scheduling.hold_exit_dwell_s);
+    output << ",\"gain_transition_time_s\":";
+    append_number(
+        output, tuning.mode_scheduling.gain_transition_time_s);
+    output << '}';
     output << ",\"max_accel_mps2\":";
     append_number(output, tuning.max_accel_mps2);
     output << ",\"max_tilt_rad\":";
@@ -1046,11 +1238,41 @@ std::string Runtime::snapshot_json() const {
     append_number(output, tuning.max_yaw_rate_rad_s);
     output << ",\"yaw_rate_kp\":";
     append_number(output, tuning.yaw_rate_kp);
+    output << ",\"yaw_rate_kd\":";
+    append_number(output, tuning.yaw_rate_kd);
+    output << ",\"yaw_rate_slew_rate_rad_s2\":";
+    append_number(output, tuning.yaw_rate_slew_rate_rad_s2);
+    output << ",\"fc_yaw_rate_scale_rad_s\":";
+    append_number(output, tuning.fc_yaw_rate_scale_rad_s);
     output << ",\"max_position_error_m\":";
     append_number(output, tuning.max_position_error_m);
     output << ",\"gravity_mps2\":";
     append_number(output, tuning.gravity_mps2);
     output << '}';
+    const auto& position_mode = state.position_mode;
+    output << ",\"position_mode\":{\"mode\":\""
+           << to_string(position_mode.mode)
+           << "\",\"active\":"
+           << (position_mode.active ? "true" : "false")
+           << ",\"scheduling_enabled\":"
+           << (position_mode.scheduling_enabled ? "true" : "false")
+           << ",\"gain_transition_active\":"
+           << (position_mode.gain_transition_active ? "true" : "false")
+           << ",\"horizontal_error_m\":";
+    append_number(output, position_mode.horizontal_error_m);
+    output << ",\"vertical_error_m\":";
+    append_number(output, position_mode.vertical_error_m);
+    output << ",\"horizontal_speed_mps\":";
+    append_number(output, position_mode.horizontal_speed_mps);
+    output << ",\"vertical_speed_mps\":";
+    append_number(output, position_mode.vertical_speed_mps);
+    output << ",\"active_gains\":{\"x\":";
+    append_axis(position_mode.active_x);
+    output << ",\"y\":";
+    append_axis(position_mode.active_y);
+    output << ",\"z\":";
+    append_axis(position_mode.active_z);
+    output << "}}";
     output << ",\"rc_mapping\":{\"roll\":"
            << state.rc_mapping.roll << ",\"pitch\":"
            << state.rc_mapping.pitch << ",\"throttle\":"
@@ -1263,16 +1485,42 @@ std::string Runtime::snapshot_json() const {
     output << ",\"pose\":{\"valid\":"
            << (state.pose.valid ? "true" : "false");
     output << ",\"sequence\":" << state.pose.sequence;
+    output << ",\"source_sensor_id\":" << state.pose.source_sensor_id;
+    output << ",\"received_mono_ns\":" << state.pose.received_mono_ns;
+    output << ",\"source_time_ns\":" << state.pose.source_mono_ns;
+    output << ",\"source_time_present\":"
+           << (state.pose.source_time_present ? "true" : "false");
     output << ",\"source_time_measured\":"
            << (state.pose.source_time_valid ? "true" : "false");
+    output << ",\"source_clock_delta_ms\":";
+    append_number(
+        output,
+        static_cast<double>(state.pose.source_clock_delta_ns) /
+            1'000'000.0);
     output << ",\"source_age_us_at_receive\":"
            << state.pose.source_age_at_receive_ns / 1'000U;
+    output << ",\"arrival_interval_ms\":";
+    append_number(
+        output,
+        static_cast<double>(state.pose.arrival_interval_ns) /
+            1'000'000.0);
+    output << ",\"source_time_interval_ms\":";
+    append_number(
+        output,
+        static_cast<double>(state.pose.source_time_interval_ns) /
+            1'000'000.0);
+    output << ",\"source_time_regression\":"
+           << (state.pose.source_time_regression ? "true" : "false");
     output << ",\"age_ms\":";
     append_number(output, state.pose_age_ms);
     output << ",\"position_xyz_m\":";
     append_vec3(output, state.pose.position_xyz_m);
     output << ",\"orientation_wxyz\":";
     append_quaternion(output, state.pose.q_body_to_world);
+    output << ",\"raw_position\":";
+    append_vec3(output, state.pose.raw_position);
+    output << ",\"raw_orientation_wxyz\":";
+    append_quaternion(output, state.pose.raw_orientation);
     output << '}';
 
     output << ",\"target\":{\"position_xyz_m\":";
@@ -1330,6 +1578,14 @@ std::string Runtime::snapshot_json() const {
            << (state.link.connected ? "true" : "false");
     output << ",\"commands_sent\":" << state.link.commands_sent;
     output << ",\"send_errors\":" << state.link.send_errors;
+    output << ",\"suppressed_sends\":"
+           << state.link.suppressed_sends;
+    output << ",\"target_rate_hz\":";
+    append_number(output, state.link.target_rate_hz);
+    output << ",\"actual_rate_hz\":";
+    append_number(output, state.link.actual_rate_hz);
+    output << ",\"last_send_interval_ms\":";
+    append_number(output, state.link.last_send_interval_ms);
     output << ",\"last_error\":\""
            << json::escape(state.link.last_error) << "\"";
     output << ",\"last_errno\":" << state.link.last_errno;

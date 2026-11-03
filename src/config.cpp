@@ -275,6 +275,120 @@ bool read_axis_gains(
                value, "kd", path, destination.kd, error, true);
 }
 
+bool read_position_profile(
+    const Value* object, std::string_view key, std::string_view path,
+    PositionProfile& destination, std::string& error) {
+    const Value* value = get_child(object, key, path, error);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!reject_unknown_keys(value, path, {"x", "y", "z"}, error)) {
+        return false;
+    }
+    const std::string profile_path(path);
+    return read_axis_gains(
+               value, "x", profile_path + ".x", destination.x, error) &&
+           read_axis_gains(
+               value, "y", profile_path + ".y", destination.y, error) &&
+           read_axis_gains(
+               value, "z", profile_path + ".z", destination.z, error);
+}
+
+bool read_position_mode_scheduling(
+    const Value* object, std::string_view key, std::string_view path,
+    PositionModeScheduling& destination, std::string& error) {
+    const Value* value = get_child(object, key, path, error);
+    if (value == nullptr) {
+        return true;
+    }
+    if (!reject_unknown_keys(
+            value, path,
+            {"enabled", "brake_enter_distance_m",
+             "brake_exit_distance_m",
+             "brake_enter_vertical_error_m",
+             "brake_exit_vertical_error_m",
+             "hold_enter_distance_m",
+             "hold_exit_distance_m",
+             "hold_enter_vertical_error_m",
+             "hold_exit_vertical_error_m",
+             "hold_enter_speed_mps", "hold_exit_speed_mps",
+             "hold_enter_vertical_speed_mps",
+             "hold_exit_vertical_speed_mps",
+             "target_motion_speed_mps", "hold_enter_dwell_s",
+             "hold_exit_dwell_s", "gain_transition_time_s"},
+            error)) {
+        return false;
+    }
+    const std::string scheduling_path(path);
+    return read_boolean(
+               value, "enabled", scheduling_path + ".enabled",
+               destination.enabled, error) &&
+           read_number(
+               value, "brake_enter_distance_m",
+               scheduling_path + ".brake_enter_distance_m",
+               destination.brake_enter_distance_m, error) &&
+           read_number(
+               value, "brake_exit_distance_m",
+               scheduling_path + ".brake_exit_distance_m",
+               destination.brake_exit_distance_m, error) &&
+           read_number(
+               value, "brake_enter_vertical_error_m",
+               scheduling_path + ".brake_enter_vertical_error_m",
+               destination.brake_enter_vertical_error_m, error) &&
+           read_number(
+               value, "brake_exit_vertical_error_m",
+               scheduling_path + ".brake_exit_vertical_error_m",
+               destination.brake_exit_vertical_error_m, error) &&
+           read_number(
+               value, "hold_enter_distance_m",
+               scheduling_path + ".hold_enter_distance_m",
+               destination.hold_enter_distance_m, error) &&
+           read_number(
+               value, "hold_exit_distance_m",
+               scheduling_path + ".hold_exit_distance_m",
+               destination.hold_exit_distance_m, error) &&
+           read_number(
+               value, "hold_enter_vertical_error_m",
+               scheduling_path + ".hold_enter_vertical_error_m",
+               destination.hold_enter_vertical_error_m, error) &&
+           read_number(
+               value, "hold_exit_vertical_error_m",
+               scheduling_path + ".hold_exit_vertical_error_m",
+               destination.hold_exit_vertical_error_m, error) &&
+           read_number(
+               value, "hold_enter_speed_mps",
+               scheduling_path + ".hold_enter_speed_mps",
+               destination.hold_enter_speed_mps, error) &&
+           read_number(
+               value, "hold_exit_speed_mps",
+               scheduling_path + ".hold_exit_speed_mps",
+               destination.hold_exit_speed_mps, error) &&
+           read_number(
+               value, "hold_enter_vertical_speed_mps",
+               scheduling_path + ".hold_enter_vertical_speed_mps",
+               destination.hold_enter_vertical_speed_mps, error) &&
+           read_number(
+               value, "hold_exit_vertical_speed_mps",
+               scheduling_path + ".hold_exit_vertical_speed_mps",
+               destination.hold_exit_vertical_speed_mps, error) &&
+           read_number(
+               value, "target_motion_speed_mps",
+               scheduling_path + ".target_motion_speed_mps",
+               destination.target_motion_speed_mps, error) &&
+           read_number(
+               value, "hold_enter_dwell_s",
+               scheduling_path + ".hold_enter_dwell_s",
+               destination.hold_enter_dwell_s, error) &&
+           read_number(
+               value, "hold_exit_dwell_s",
+               scheduling_path + ".hold_exit_dwell_s",
+               destination.hold_exit_dwell_s, error) &&
+           read_number(
+               value, "gain_transition_time_s",
+               scheduling_path + ".gain_transition_time_s",
+               destination.gain_transition_time_s, error);
+}
+
 bool read_file(const std::string& path, std::string& contents) {
     std::ifstream stream(path, std::ios::binary);
     if (!stream) {
@@ -344,19 +458,23 @@ std::optional<AppConfig> load_config_file(
         reject_unknown_keys(
             control, "control",
             {"rate_hz", "warning_pose_age_ms", "max_pose_age_ms",
-             "deadman_timeout_ms"},
+             "deadman_timeout_ms", "target_slew_rate_mps"},
             error) &&
         reject_unknown_keys(
             position_loop, "position_loop",
-            {"x", "y", "z", "max_accel_mps2", "max_tilt_rad",
+            {"x", "y", "z", "approach", "precision_hold",
+             "mode_scheduling", "max_accel_mps2", "max_tilt_rad",
              "min_throttle", "hover_throttle", "max_throttle",
              "z_velocity_damping",
-             "max_yaw_rate_rad_s", "yaw_rate_kp",
+             "max_yaw_rate_rad_s", "yaw_rate_kp", "yaw_rate_kd",
+             "yaw_rate_slew_rate_rad_s2",
+             "fc_yaw_rate_scale_rad_s",
              "max_position_error_m", "gravity_mps2"},
             error) &&
         reject_unknown_keys(
             flight_log, "flight_log",
-            {"enabled", "directory", "telemetry_stale_timeout_ms"},
+            {"enabled", "directory", "telemetry_stale_timeout_ms",
+             "pre_roll_s"},
             error) &&
         reject_unknown_keys(
             target, "initial_target",
@@ -369,6 +487,7 @@ std::optional<AppConfig> load_config_file(
             {"transport", "protocol", "remote_ip", "remote_port",
              "local_ip", "local_port", "telemetry_timeout_ms",
              "heartbeat_timeout_ms", "heartbeat_rate_hz",
+             "data_rc_rate_hz",
              "rc_roll_channel", "rc_pitch_channel",
              "rc_throttle_channel", "rc_yaw_channel",
              "bumpless_hold_ms", "throttle_transition_ms",
@@ -377,8 +496,8 @@ std::optional<AppConfig> load_config_file(
             error) &&
         reject_unknown_keys(
             vrpn, "vrpn",
-            {"endpoint", "sensor_id", "position_scale", "auto_origin",
-             "axes_from_vrpn", "trust_source_timestamp"},
+            {"endpoint", "sensor_id", "position_scale", "expected_rate_hz",
+             "auto_origin", "axes_from_vrpn", "trust_source_timestamp"},
             error);
     if (!sections_valid) {
         error = path + ": " + error;
@@ -409,6 +528,10 @@ std::optional<AppConfig> load_config_file(
         read_number(
             control, "deadman_timeout_ms", "control.deadman_timeout_ms",
             config.deadman_timeout_ms, error) &&
+        read_number(
+            control, "target_slew_rate_mps",
+            "control.target_slew_rate_mps",
+            config.target_slew_rate_mps, error) &&
         read_axis_gains(
             position_loop, "x", "position_loop.x",
             config.position_loop.x, error) &&
@@ -418,6 +541,17 @@ std::optional<AppConfig> load_config_file(
         read_axis_gains(
             position_loop, "z", "position_loop.z",
             config.position_loop.z, error) &&
+        read_position_profile(
+            position_loop, "approach", "position_loop.approach",
+            config.position_loop.approach, error) &&
+        read_position_profile(
+            position_loop, "precision_hold",
+            "position_loop.precision_hold",
+            config.position_loop.precision_hold, error) &&
+        read_position_mode_scheduling(
+            position_loop, "mode_scheduling",
+            "position_loop.mode_scheduling",
+            config.position_loop.mode_scheduling, error) &&
         read_number(
             position_loop, "max_accel_mps2",
             "position_loop.max_accel_mps2",
@@ -450,6 +584,18 @@ std::optional<AppConfig> load_config_file(
             position_loop, "yaw_rate_kp",
             "position_loop.yaw_rate_kp",
             config.position_loop.yaw_rate_kp, error) &&
+        read_number(
+            position_loop, "yaw_rate_kd",
+            "position_loop.yaw_rate_kd",
+            config.position_loop.yaw_rate_kd, error) &&
+        read_number(
+            position_loop, "yaw_rate_slew_rate_rad_s2",
+            "position_loop.yaw_rate_slew_rate_rad_s2",
+            config.position_loop.yaw_rate_slew_rate_rad_s2, error) &&
+        read_number(
+            position_loop, "fc_yaw_rate_scale_rad_s",
+            "position_loop.fc_yaw_rate_scale_rad_s",
+            config.position_loop.fc_yaw_rate_scale_rad_s, error) &&
         read_number(
             position_loop, "max_position_error_m",
             "position_loop.max_position_error_m",
@@ -500,6 +646,9 @@ std::optional<AppConfig> load_config_file(
         read_number(
             flight, "heartbeat_rate_hz", "flight.heartbeat_rate_hz",
             config.gs_link_heartbeat_rate_hz, error) &&
+        read_number(
+            flight, "data_rc_rate_hz", "flight.data_rc_rate_hz",
+            config.data_rc_rate_hz, error) &&
         read_integer(
             flight, "rc_roll_channel", "flight.rc_roll_channel",
             config.rc_mapping.roll, error) &&
@@ -538,6 +687,9 @@ std::optional<AppConfig> load_config_file(
             flight_log, "telemetry_stale_timeout_ms",
             "flight_log.telemetry_stale_timeout_ms",
             config.flight_log_stale_timeout_ms, error) &&
+        read_number(
+            flight_log, "pre_roll_s", "flight_log.pre_roll_s",
+            config.flight_log_pre_roll_s, error) &&
         read_string(
             vrpn, "endpoint", "vrpn.endpoint", config.vrpn_endpoint, error) &&
         read_optional_integer(
@@ -545,6 +697,9 @@ std::optional<AppConfig> load_config_file(
         read_number(
             vrpn, "position_scale", "vrpn.position_scale",
             config.vrpn_position_scale, error) &&
+        read_number(
+            vrpn, "expected_rate_hz", "vrpn.expected_rate_hz",
+            config.vrpn_expected_rate_hz, error) &&
         read_boolean(
             vrpn, "auto_origin", "vrpn.auto_origin", config.vrpn_auto_origin,
             error) &&
@@ -597,6 +752,16 @@ void validate_config(const AppConfig& config) {
     require(
         config.deadman_timeout_ms >= 100.0,
         "control.deadman_timeout_ms must be at least 100");
+    require(
+        std::isfinite(config.target_slew_rate_mps) &&
+            config.target_slew_rate_mps >= 0.01 &&
+            config.target_slew_rate_mps <= 5.0,
+        "control.target_slew_rate_mps must be in [0.01, 5.0]");
+    require(
+        std::isfinite(config.data_rc_rate_hz) &&
+            config.data_rc_rate_hz >= 1.0 &&
+            config.data_rc_rate_hz <= config.control_rate_hz,
+        "flight.data_rc_rate_hz must be in [1, control.rate_hz]");
     const auto valid_axis = [](const AxisPidGains& axis) {
         return std::isfinite(axis.kp) && std::isfinite(axis.ki) &&
                std::isfinite(axis.kd) && axis.kp >= 0.0 &&
@@ -609,6 +774,76 @@ void validate_config(const AppConfig& config) {
             valid_axis(config.position_loop.z),
         "position_loop X/Y/Z PID gains must be finite, non-negative, "
         "and not all zero");
+    const auto valid_profile = [&valid_axis](
+                                   const PositionProfile& profile) {
+        return valid_axis(profile.x) && valid_axis(profile.y) &&
+               valid_axis(profile.z);
+    };
+    require(
+        valid_profile(config.position_loop.approach) &&
+            valid_profile(config.position_loop.precision_hold),
+        "position_loop approach/precision_hold PID profiles are invalid");
+    const auto& scheduling = config.position_loop.mode_scheduling;
+    require(
+        std::isfinite(scheduling.brake_enter_distance_m) &&
+            std::isfinite(scheduling.brake_exit_distance_m) &&
+            std::isfinite(scheduling.hold_enter_distance_m) &&
+            std::isfinite(scheduling.hold_exit_distance_m) &&
+            scheduling.hold_enter_distance_m > 0.0 &&
+            scheduling.hold_enter_distance_m <
+                scheduling.hold_exit_distance_m &&
+            scheduling.hold_exit_distance_m <
+                scheduling.brake_enter_distance_m &&
+            scheduling.brake_enter_distance_m <
+                scheduling.brake_exit_distance_m,
+        "position_loop.mode_scheduling distance thresholds must satisfy "
+        "0 < hold_enter < hold_exit < brake_enter < brake_exit");
+    require(
+        std::isfinite(scheduling.brake_enter_vertical_error_m) &&
+            std::isfinite(scheduling.brake_exit_vertical_error_m) &&
+            scheduling.brake_enter_vertical_error_m > 0.0 &&
+            scheduling.brake_enter_vertical_error_m <
+                scheduling.brake_exit_vertical_error_m,
+        "position_loop.mode_scheduling vertical brake thresholds are invalid");
+    require(
+        std::isfinite(scheduling.hold_enter_vertical_error_m) &&
+            std::isfinite(scheduling.hold_exit_vertical_error_m) &&
+            scheduling.hold_enter_vertical_error_m > 0.0 &&
+            scheduling.hold_enter_vertical_error_m <
+                scheduling.hold_exit_vertical_error_m,
+        "position_loop.mode_scheduling vertical hold thresholds are invalid");
+    require(
+        std::isfinite(scheduling.hold_enter_speed_mps) &&
+            std::isfinite(scheduling.hold_exit_speed_mps) &&
+            scheduling.hold_enter_speed_mps > 0.0 &&
+            scheduling.hold_enter_speed_mps <
+                scheduling.hold_exit_speed_mps,
+        "position_loop.mode_scheduling horizontal speed thresholds are invalid");
+    require(
+        std::isfinite(scheduling.hold_enter_vertical_speed_mps) &&
+            std::isfinite(scheduling.hold_exit_vertical_speed_mps) &&
+            scheduling.hold_enter_vertical_speed_mps > 0.0 &&
+            scheduling.hold_enter_vertical_speed_mps <
+                scheduling.hold_exit_vertical_speed_mps,
+        "position_loop.mode_scheduling vertical speed thresholds are invalid");
+    require(
+        std::isfinite(scheduling.target_motion_speed_mps) &&
+            scheduling.target_motion_speed_mps >= 0.0 &&
+            scheduling.target_motion_speed_mps <= 1.0,
+        "position_loop.mode_scheduling.target_motion_speed_mps must be in "
+        "[0, 1]");
+    require(
+        std::isfinite(scheduling.hold_enter_dwell_s) &&
+            std::isfinite(scheduling.hold_exit_dwell_s) &&
+            std::isfinite(scheduling.gain_transition_time_s) &&
+            scheduling.hold_enter_dwell_s >= 0.0 &&
+            scheduling.hold_enter_dwell_s <= 5.0 &&
+            scheduling.hold_exit_dwell_s >= 0.0 &&
+            scheduling.hold_exit_dwell_s <= 5.0 &&
+            scheduling.gain_transition_time_s >= 0.0 &&
+            scheduling.gain_transition_time_s <= 5.0,
+        "position_loop.mode_scheduling dwell/transition times must be in "
+        "[0, 5] seconds");
     require(
         std::isfinite(config.position_loop.max_accel_mps2) &&
             config.position_loop.max_accel_mps2 > 0.0,
@@ -636,12 +871,30 @@ void validate_config(const AppConfig& config) {
         "position_loop.z_velocity_damping must be in [0, 0.5]");
     require(
         std::isfinite(config.position_loop.max_yaw_rate_rad_s) &&
-            config.position_loop.max_yaw_rate_rad_s > 0.0,
-        "position_loop.max_yaw_rate_rad_s must be positive");
+            config.position_loop.max_yaw_rate_rad_s > 0.0 &&
+            config.position_loop.max_yaw_rate_rad_s <= 1.5,
+        "position_loop.max_yaw_rate_rad_s must be in (0, 1.5]");
     require(
         std::isfinite(config.position_loop.yaw_rate_kp) &&
-            config.position_loop.yaw_rate_kp >= 0.0,
-        "position_loop.yaw_rate_kp cannot be negative");
+            config.position_loop.yaw_rate_kp >= 0.0 &&
+            config.position_loop.yaw_rate_kp <= 10.0,
+        "position_loop.yaw_rate_kp must be in [0, 10]");
+    require(
+        std::isfinite(config.position_loop.yaw_rate_kd) &&
+            config.position_loop.yaw_rate_kd >= 0.0 &&
+            config.position_loop.yaw_rate_kd <= 5.0,
+        "position_loop.yaw_rate_kd must be in [0, 5]");
+    require(
+        std::isfinite(
+            config.position_loop.yaw_rate_slew_rate_rad_s2) &&
+            config.position_loop.yaw_rate_slew_rate_rad_s2 > 0.0 &&
+            config.position_loop.yaw_rate_slew_rate_rad_s2 <= 20.0,
+        "position_loop.yaw_rate_slew_rate_rad_s2 must be in (0, 20]");
+    require(
+        std::isfinite(config.position_loop.fc_yaw_rate_scale_rad_s) &&
+            config.position_loop.fc_yaw_rate_scale_rad_s > 0.0 &&
+            config.position_loop.fc_yaw_rate_scale_rad_s <= 3.0,
+        "position_loop.fc_yaw_rate_scale_rad_s must be in (0, 3]");
     require(
         std::isfinite(config.position_loop.max_position_error_m) &&
             config.position_loop.max_position_error_m > 0.0,
@@ -702,6 +955,11 @@ void validate_config(const AppConfig& config) {
             config.flight_log_stale_timeout_ms <= 30000,
         "flight_log.telemetry_stale_timeout_ms must be in [100, 30000]");
     require(
+        std::isfinite(config.flight_log_pre_roll_s) &&
+            config.flight_log_pre_roll_s >= 0.0 &&
+            config.flight_log_pre_roll_s <= 30.0,
+        "flight_log.pre_roll_s must be in [0, 30]");
+    require(
         config.simulated_pose_rate_hz >= 10.0 &&
             config.simulated_pose_rate_hz <= 500.0,
         "simulation.pose_rate_hz must be in [10, 500]");
@@ -719,6 +977,11 @@ void validate_config(const AppConfig& config) {
         config.vrpn_position_scale > 0.0 &&
             std::isfinite(config.vrpn_position_scale),
         "vrpn.position_scale must be positive");
+    require(
+        std::isfinite(config.vrpn_expected_rate_hz) &&
+            config.vrpn_expected_rate_hz >= 10.0 &&
+            config.vrpn_expected_rate_hz <= 500.0,
+        "vrpn.expected_rate_hz must be in [10, 500]");
     require(
         is_finite(config.vrpn_axes_from_vrpn),
         "vrpn.axes_from_vrpn must contain finite numbers");
